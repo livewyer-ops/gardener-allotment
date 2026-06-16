@@ -134,7 +134,28 @@ tasks:
         kubectl wait --for=condition=Established crd/xallotments.allotment.io --timeout=5m
         echo "Deploying (Crossplane converges infrastructure + Gardener)..."
         kubectl apply -f deploy/claims/{{.PROVIDER}}/
-        kubectl wait --for=condition=Ready xallotment/garden --timeout=40m
+        # Gate on readiness, but surface live convergence instead of a silent 40m
+        # wait. Task's embedded shell has no job control, so we poll rather than
+        # background: each 'kubectl wait' blocks up to 30s (returning instantly
+        # once Ready, blocking the full 30s while Ready=False — that is the
+        # pacing), and between waits we print 'crossplane resource trace' (the
+        # composite tree with per-resource SYNCED/READY/STATUS) and Gardener's
+        # lastOperation. Rendering is delegated to those tools — no formatting here.
+        deadline=$(( $(date +%s) + 2400 ))
+        while :; do
+          if kubectl wait --for=condition=Ready xallotment/garden --timeout=30s >/dev/null 2>&1; then
+            break
+          fi
+          if [ "$(date +%s)" -ge "$deadline" ]; then
+            echo "XAllotment did not reach Ready within 40m. Last observed state:" >&2
+            crossplane resource trace xallotment.allotment.io/garden 2>/dev/null || true
+            exit 1
+          fi
+          printf '\n=== convergence @ %s (Ctrl-C is safe; install is idempotent) ===\n' "$(date -u +%H:%M:%SZ)"
+          crossplane resource trace xallotment.allotment.io/garden 2>/dev/null || true
+          kubectl get garden -A \
+            -o jsonpath='{range .items[*]}garden: {.status.lastOperation.description}{"\n"}{end}' 2>/dev/null || true
+        done
         echo "XAllotment is Ready."
       - task: ops:kubeconfig
       - task: ops:validate-live

@@ -1,0 +1,216 @@
+version: '3'
+
+silent: true
+
+env:
+  KUBECONFIG: '{{.ROOT_DIR}}/private/kubeconfig'
+
+vars:
+  PROVIDER:
+    sh: |
+      if [ -f deploy/config.yaml ]; then
+        if command -v yq >/dev/null 2>&1; then
+          yq -r '.data.provider // ""' deploy/config.yaml 2>/dev/null || true
+        fi
+      fi
+  PROJECT_ID:
+    sh: |
+      if [ -f deploy/config.yaml ]; then
+        if command -v yq >/dev/null 2>&1; then
+          yq -r '.data.projectId // ""' deploy/config.yaml 2>/dev/null || true
+        fi
+      fi
+  CLUSTER_NAME:
+    sh: |
+      if [ -f deploy/config.yaml ]; then
+        if command -v yq >/dev/null 2>&1; then
+          yq -r '.data.clusterName // ""' deploy/config.yaml 2>/dev/null || true
+        fi
+      fi
+  REGION:
+    sh: |
+      if [ -f deploy/config.yaml ]; then
+        if command -v yq >/dev/null 2>&1; then
+          yq -r '.data.region // ""' deploy/config.yaml 2>/dev/null || true
+        fi
+      fi
+  DNS_DOMAIN:
+    sh: |
+      if [ -f deploy/config.yaml ]; then
+        if command -v yq >/dev/null 2>&1; then
+          yq -r '.data.dnsDomain // ""' deploy/config.yaml 2>/dev/null || true
+        fi
+      fi
+  AWS_PROFILE:
+    sh: |
+      if [ -f deploy/config.yaml ]; then
+        if command -v yq >/dev/null 2>&1; then
+          yq -r '.data.awsProfile // "default"' deploy/config.yaml 2>/dev/null || true
+        fi
+      else
+        printf 'default\n'
+      fi
+
+includes:
+  config:
+    taskfile: ./.tasks/config.yml
+  identity:
+    taskfile: ./.tasks/identity.yml
+  ops:
+    taskfile: ./.tasks/ops.yml
+  validate:
+    taskfile: ./.tasks/validate.yml
+  build:
+    taskfile: ./.tasks/build.yml
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task: help
+
+  help:
+    desc: Show provider and primary workflow
+    cmds:
+      - |
+        provider="{{.PROVIDER}}"
+        if [ -z "$provider" ]; then provider="not configured"; fi
+        printf 'provider: %s\n' "$provider"
+        printf 'task build | validate | validate-render | bootstrap-identity | load-identity | install | validate-live | observability | teardown | status | kubeconfig | dashboard | token | deauth | verify-clean | clean-private\n'
+
+  validate:
+    desc: Lint and validate local manifests
+    cmds:
+      - task: validate:run
+
+  validate-render:
+    desc: Render AWS and GCP compositions and compare expected resources
+    cmds:
+      - task: validate:render
+
+  build:
+    desc: Build local manifest bundle and validation inventory
+    cmds:
+      - task: config:preflight-config
+      - task: validate:run
+      - task: build:run
+
+  bootstrap-identity:
+    desc: Create disposable cloud credentials for evaluation
+    cmds:
+      - task: config:preflight-config
+      - task: identity:bootstrap-identity-{{.PROVIDER}}
+
+  load-identity:
+    desc: Load existing credentials into Crossplane secrets
+    cmds:
+      - task: config:preflight-config
+      - task: identity:load-identity-{{.PROVIDER}}
+
+  install:
+    desc: Create kind, install Crossplane, and converge Allotment
+    cmds:
+      - task: config:preflight-install
+      - |
+        set -euo pipefail
+        install -d -m 700 private
+        echo "Creating kind cluster..."
+        kind get clusters 2>/dev/null | grep -q '^allotment$' || \
+          kind create cluster --config kind.yaml --kubeconfig "$KUBECONFIG"
+        echo "Installing Crossplane + platform..."
+        kubectl apply -f bootstrap/crossplane.yaml >/dev/null
+        kubectl -n crossplane-system wait --for=condition=Available \
+          deploy/crossplane --timeout=10m
+      - task: identity:load-identity-{{.PROVIDER}}
+      - |
+        set -euo pipefail
+        kubectl create configmap allotment-templates -n crossplane-system \
+          --from-file=platform/templates/ --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+        kubectl apply -f bootstrap/providers-common.yaml -f bootstrap/providers-{{.PROVIDER}}.yaml \
+          -f platform/definitions.yaml -f platform/functions.yaml \
+          -f platform/configs/ -f deploy/config.yaml \
+          -f platform/compositions/{{.PROVIDER}}/ >/dev/null
+        kubectl wait provider.pkg --all --for=condition=Healthy --timeout=15m
+        kubectl wait --for=condition=Established crd/xallotments.allotment.io --timeout=5m
+        echo "Deploying (Crossplane converges infrastructure + Gardener)..."
+        kubectl apply -f deploy/claims/{{.PROVIDER}}/
+        kubectl wait --for=condition=Ready xallotment/garden --timeout=40m
+        echo "XAllotment is Ready."
+      - task: ops:kubeconfig
+      - task: ops:validate-live
+      - |
+        echo "Done. Run 'task dashboard'."
+
+  teardown:
+    desc: Delete XAllotment, capture diagnostics, then remove kind
+    cmds:
+      - task: config:preflight-config
+      - |
+        set -euo pipefail
+        run_task() {
+          command -v task >/dev/null 2>&1 || {
+            echo "ERROR: task not found. Run aqua install and add \$(aqua root-dir)/bin to PATH." >&2
+            return 1
+          }
+          task "$@"
+        }
+
+        echo "Deleting XAllotment (cascade through all children)..."
+        status=0
+        kubectl delete xallotment garden --cascade=foreground --timeout=45m || status=$?
+        run_task ops:capture-teardown-diagnostics || true
+        if [ "$status" -ne 0 ]; then
+          echo "Teardown did not complete; preserving kind cluster for inspection." >&2
+          exit "$status"
+        fi
+        kind delete cluster --name allotment
+        rm -f "$KUBECONFIG" private/runtime-kubeconfig
+        echo "Done."
+
+  validate-live:
+    desc: Run Chainsaw post-install validation
+    cmds:
+      - task: config:preflight-config
+      - task: ops:validate-live
+
+  status:
+    desc: Show cluster, Crossplane, XR, managed-resource, and warning state
+    cmds:
+      - task: ops:status
+
+  kubeconfig:
+    desc: Extract runtime cluster kubeconfig
+    cmds:
+      - task: ops:kubeconfig
+
+  token:
+    desc: Print Gardener Dashboard token
+    cmds:
+      - task: ops:token
+
+  dashboard:
+    desc: Print Dashboard URL and token, then port-forward
+    cmds:
+      - task: ops:dashboard
+
+  observability:
+    desc: Probe runtime logs, warnings, and metrics surfaces
+    cmds:
+      - task: ops:observability
+
+  deauth:
+    desc: Remove bootstrap cloud identity and local credentials
+    cmds:
+      - task: config:preflight-config
+      - task: identity:deauth-{{.PROVIDER}}
+
+  clean-private:
+    desc: Remove generated logs and kubeconfigs, keeping cloud credentials
+    cmds:
+      - task: ops:clean-private
+
+  verify-clean:
+    desc: Read-only audit for likely cloud leftovers
+    cmds:
+      - task: config:preflight-config
+      - task: ops:verify-clean-{{.PROVIDER}}

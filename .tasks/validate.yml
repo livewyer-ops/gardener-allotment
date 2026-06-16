@@ -1,0 +1,201 @@
+version: '3'
+
+silent: true
+
+tasks:
+  run:
+    desc: Validate YAML, Taskfiles, and Kubernetes manifests
+    cmds:
+      - |
+        set -euo pipefail
+        die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+        tool() {
+          command -v "$1" >/dev/null 2>&1 || die "$1 not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
+          "$@"
+        }
+
+        tool yamllint --version >/dev/null
+        tool yq --version >/dev/null
+        tool jq --version >/dev/null
+        tool shellcheck --version >/dev/null
+        tool kubeconform -v >/dev/null
+        tool chainsaw version >/dev/null
+
+        tool yamllint -c .yamllint.yaml bootstrap/ platform/ deploy/ tests/ .github/ .tasks/ Taskfile.yml aqua.yaml kind.yaml
+
+        {
+          find bootstrap platform deploy tests .github .tasks -type f \( -name '*.yaml' -o -name '*.yml' \) -print
+          printf '%s\n' Taskfile.yml aqua.yaml kind.yaml
+        } | sort | while IFS= read -r file; do
+          tool yq e '.' "$file" >/dev/null
+        done
+        find . -maxdepth 2 \( -path './.git' -o -path './private' \) -prune -o -type f -name '*.json' -print | sort \
+          | while IFS= read -r file; do
+            tool jq empty "$file"
+          done
+
+        find tests/chainsaw -type f -name chainsaw-test.yaml -print | sort | while IFS= read -r file; do
+          tool chainsaw lint test -f "$file"
+        done
+
+        tool task --list >/dev/null
+
+        find . -path './.git' -prune -o -path './private' -prune -o \
+          -type f -name '*.md' -print | sort | while IFS= read -r file; do
+          links="$(grep -oE '\[[^]]+\]\([^)]+\)' "$file" || true)"
+          [ -n "$links" ] || continue
+          while IFS= read -r link; do
+            target="${link##*(}"
+            target="${target%)}"
+            case "$target" in
+              http://* | https://* | mailto:* | \#* | "") continue ;;
+            esac
+            target="${target%%#*}"
+            [ -n "$target" ] || continue
+            [ -e "$(dirname "$file")/$target" ] || die "broken Markdown link in $file: $target"
+          done <<EOF
+        $links
+        EOF
+        done
+
+        tool kubeconform -ignore-missing-schemas -summary bootstrap/ platform/ deploy/ kind.yaml
+
+  render:
+    desc: Render provider compositions and compare expected resource inventories
+    cmds:
+      - |
+        set -euo pipefail
+        die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+        tool() {
+          command -v "$1" >/dev/null 2>&1 || die "$1 not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
+          "$@"
+        }
+
+        command -v docker >/dev/null 2>&1 || die "docker not found. Crossplane render validation requires Docker."
+        docker info >/dev/null 2>&1 || die "Docker daemon is not available. Start Docker before running render validation."
+        tool crossplane version --client >/dev/null
+
+        tmp="$(mktemp -d)"
+        trap 'rm -rf "$tmp"' EXIT
+
+        template_file="$tmp/templates.tmpl"
+        : >"$template_file"
+        find platform/templates -type f -name '*.tmpl' -print | sort | while IFS= read -r file; do
+          printf '\n{{/* Source: %s */}}\n' "$file" >>"$template_file"
+          cat "$file" >>"$template_file"
+          printf '\n' >>"$template_file"
+        done
+
+        tool yq 'select(.kind == "Function")' platform/functions.yaml >"$tmp/functions.yaml"
+
+        prepare_provider() {
+          provider="$1"
+          mkdir -p "$tmp/$provider/required"
+          cp "deploy/config-${provider}.yaml.example" "$tmp/$provider/required/allotment-config.yaml"
+          tool yq -i '.data.createShoot = "true"' "$tmp/$provider/required/allotment-config.yaml"
+          case "$provider" in
+            aws) tool yq -i '.data.projectId = "999999999999"' "$tmp/$provider/required/allotment-config.yaml" ;;
+            gcp) tool yq -i '.data.projectId = "allotment-render"' "$tmp/$provider/required/allotment-config.yaml" ;;
+          esac
+          cp platform/configs/*.yaml "$tmp/$provider/required/"
+          cat >"$tmp/$provider/required/gardener-sa-key.yaml" <<'EOF'
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: gardener-sa-key
+          namespace: crossplane-system
+        data:
+          accessKeyID: QUtJQURVTU1Z
+          secretAccessKey: U0VDUkVURE1NWQ==
+          serviceaccount.json: e30=
+        EOF
+          cat >"$tmp/$provider/required/xinfra.yaml" <<'EOF'
+        apiVersion: allotment.io/v1alpha1
+        kind: XInfra
+        metadata:
+          name: garden-infra
+        status:
+          vpcId: vpc-1234567890abcdef0
+        EOF
+        }
+
+        write_xr() {
+          provider="$1"
+          component="$2"
+          kind="$3"
+          name="$4"
+          cat >"$tmp/$provider/${component}.yaml" <<EOF
+        apiVersion: allotment.io/v1alpha1
+        kind: ${kind}
+        metadata:
+          name: ${name}
+        spec: {}
+        EOF
+        }
+
+        patch_composition() {
+          source="$1"
+          target="$2"
+          TEMPLATE="$(cat "$template_file")" tool yq \
+            '(.spec.pipeline[] | select(.functionRef.name == "function-go-templating").input.source) = "Inline" |
+             (.spec.pipeline[] | select(.functionRef.name == "function-go-templating").input.inline.template) = strenv(TEMPLATE) |
+             del(.spec.pipeline[] | select(.functionRef.name == "function-go-templating").input.fileSystem) |
+             .spec.pipeline = [.spec.pipeline[] | select(.functionRef.name != "function-sequencer")]' \
+            "$source" >"$target"
+        }
+
+        render_component() {
+          provider="$1"
+          component="$2"
+          kind="$3"
+          name="$4"
+          composition="platform/compositions/${provider}/${component}.yaml"
+          patched="$tmp/$provider/${component}-composition.yaml"
+          render="$tmp/$provider/${component}-render.yaml"
+          inventory="$tmp/$provider/${component}.inventory"
+          xr="$tmp/$provider/${component}.yaml"
+
+          if [ "$component" = "allotment" ]; then
+            xr="deploy/claims/${provider}/allotment.yaml"
+          else
+            write_xr "$provider" "$component" "$kind" "$name"
+          fi
+
+          patch_composition "$composition" "$patched"
+          tool crossplane composition render "$xr" "$patched" "$tmp/functions.yaml" \
+            --required-resources "$tmp/$provider/required" \
+            --include-full-xr \
+            --timeout="${RENDER_TIMEOUT:-3m}" >"$render"
+
+          tool yq -r 'select(type == "!!map" and has("kind")) | [.apiVersion, .kind, (.metadata.name // "-")] | @tsv' "$render" \
+            | sort >"$inventory"
+
+          awk -v component="$component" 'NF && $1 !~ /^#/ && $1 == component {print $2 "\t" $3 "\t" $4}' \
+            "tests/render/expected/${provider}.tsv" | while IFS= read -r expected; do
+              [ -n "$expected" ] || continue
+              grep -Fx -- "$expected" "$inventory" >/dev/null \
+                || die "rendered ${provider}/${component} missing expected resource: ${expected}"
+            done
+
+          if grep -Eq 'your-gcp-project-id|123456789012' "$render"; then
+            die "rendered ${provider}/${component} retained example project/account placeholder"
+          fi
+          if [ "$provider" = "gcp" ] && grep -q 'REPLACE' "$render"; then
+            die "rendered ${provider}/${component} retained REPLACE placeholder"
+          fi
+          if [ "$provider" = "aws" ] && [ "$component" != "infra" ] && grep -q 'REPLACE' "$render"; then
+            die "rendered ${provider}/${component} retained unexpected REPLACE placeholder"
+          fi
+
+          echo "Rendered ${provider}/${component}"
+        }
+
+        for provider in aws gcp; do
+          prepare_provider "$provider"
+          render_component "$provider" allotment XAllotment garden
+          render_component "$provider" infra XInfra garden-infra
+          render_component "$provider" workload XWorkload garden-workload
+          render_component "$provider" garden XGarden garden-core
+          render_component "$provider" seed XSeed garden-seed
+          render_component "$provider" virtual XVirtualGarden garden-virtual
+        done

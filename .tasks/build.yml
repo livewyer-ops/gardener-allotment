@@ -1,0 +1,70 @@
+version: '3'
+
+silent: true
+
+tasks:
+  run:
+    desc: Build a provider-specific manifest bundle and inventory
+    cmds:
+      - |
+        set -euo pipefail
+        die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+        tool() {
+          command -v "$1" >/dev/null 2>&1 || die "$1 not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
+          "$@"
+        }
+
+        provider="{{.PROVIDER}}"
+        [ -n "$provider" ] || die "provider not configured."
+
+        install -d -m 700 private/build
+        timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+        bundle="private/build/allotment-${provider}-${timestamp}.yaml"
+        inventory="private/build/allotment-${provider}-${timestamp}.inventory"
+
+        manifest_files="$(
+          {
+            printf '%s\n' bootstrap/crossplane.yaml
+            printf '%s\n' bootstrap/providers-common.yaml
+            printf '%s\n' "bootstrap/providers-${provider}.yaml"
+            printf '%s\n' platform/definitions.yaml
+            printf '%s\n' platform/functions.yaml
+            find platform/configs -maxdepth 1 -type f -name '*.yaml' -print | sort
+            printf '%s\n' deploy/config.yaml
+            find "platform/compositions/${provider}" -maxdepth 1 -type f -name '*.yaml' -print | sort
+            find "deploy/claims/${provider}" -maxdepth 1 -type f -name '*.yaml' -print | sort
+          } | awk 'NF && !seen[$0]++'
+        )"
+
+        while IFS= read -r file; do
+          [ -f "$file" ] || die "build input missing: $file"
+        done <<<"$manifest_files"
+
+        : >"$bundle"
+        while IFS= read -r file; do
+          printf -- '---\n# Source: %s\n' "$file" >>"$bundle"
+          cat "$file" >>"$bundle"
+          printf '\n' >>"$bundle"
+        done <<<"$manifest_files"
+        chmod 600 "$bundle"
+
+        {
+          echo "# Allotment build inventory"
+          date -u +"timestamp: %Y-%m-%dT%H:%M:%SZ"
+          printf 'provider: %s\n' "$provider"
+          printf 'bundle: %s\n\n' "$bundle"
+          echo "## Files"
+          printf '%s\n' "$manifest_files"
+          echo ""
+          echo "## Resources"
+          while IFS= read -r file; do
+            tool yq -r 'select(type == "!!map" and has("kind")) | [.apiVersion, .kind, (.metadata.name // "-")] | @tsv' "$file" \
+              | sed "s|^|${file}\t|"
+          done <<<"$manifest_files"
+        } >"$inventory"
+        chmod 600 "$inventory"
+
+        ln -sf "$(basename "$bundle")" "private/build/allotment-${provider}-latest.yaml"
+        ln -sf "$(basename "$inventory")" "private/build/allotment-${provider}-latest.inventory"
+        echo "Wrote $bundle"
+        echo "Wrote $inventory"

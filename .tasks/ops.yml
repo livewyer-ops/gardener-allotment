@@ -1,0 +1,384 @@
+version: '3'
+
+silent: true
+
+tasks:
+  status:
+    desc: Show operational status
+    cmds:
+      - |
+        set -euo pipefail
+        command -v kubectl >/dev/null 2>&1 || { echo "ERROR: kubectl not found. Run aqua install and add \$(aqua root-dir)/bin to PATH." >&2; exit 1; }
+
+        if ! kubectl get --raw=/readyz >/dev/null 2>&1; then
+          echo "Cluster: unavailable"
+          echo "KUBECONFIG: $KUBECONFIG"
+          exit 0
+        fi
+
+        echo "Cluster: ready"
+        echo ""
+
+        if kubectl -n crossplane-system get deploy crossplane >/dev/null 2>&1; then
+          kubectl -n crossplane-system get deploy crossplane
+          echo ""
+        else
+          echo "Crossplane: not installed"
+          echo ""
+        fi
+
+        if kubectl get provider.pkg >/dev/null 2>&1; then
+          kubectl get provider.pkg
+          echo ""
+        fi
+
+        if kubectl get crd xallotments.allotment.io >/dev/null 2>&1; then
+          kubectl get xallotment,xinfra,xworkload,xgarden,xseed,xvirtualgarden --ignore-not-found
+        else
+          echo "Allotment XRs: CRDs not installed"
+        fi
+        echo ""
+
+        if ! kubectl get managed -o wide 2>/dev/null; then
+          echo "Managed resources: unavailable"
+        fi
+        echo ""
+
+        echo "Recent warnings:"
+        kubectl get events -A --field-selector type=Warning --sort-by=.lastTimestamp 2>/dev/null \
+          | tail -n 20 || true
+
+  kubeconfig:
+    desc: Write private/runtime-kubeconfig
+    cmds:
+      - |
+        set -euo pipefail
+        command -v kubectl >/dev/null 2>&1 || { echo "ERROR: kubectl not found. Run aqua install and add \$(aqua root-dir)/bin to PATH." >&2; exit 1; }
+        install -d -m 700 private
+        kubectl get secret runtime-connection -n crossplane-system \
+          -o jsonpath='{.data.kubeconfig}' | base64 -d >private/runtime-kubeconfig
+        token="$(kubectl get object runtime-admin-token \
+          -o jsonpath='{.status.atProvider.manifest.data.token}' | base64 -d)"
+        [ -n "$token" ] || { echo "ERROR: runtime admin token is not ready yet." >&2; exit 1; }
+        kubectl --kubeconfig private/runtime-kubeconfig config set-credentials admin --token="$token" >/dev/null
+        kubectl --kubeconfig private/runtime-kubeconfig config set-context --current --user=admin >/dev/null
+        chmod 600 private/runtime-kubeconfig
+        echo "Written to private/runtime-kubeconfig"
+
+  token:
+    desc: Print Dashboard login token
+    cmds:
+      - |
+        set -euo pipefail
+        command -v kubectl >/dev/null 2>&1 || { echo "ERROR: kubectl not found. Run aqua install and add \$(aqua root-dir)/bin to PATH." >&2; exit 1; }
+        [ -f private/runtime-kubeconfig ] || { echo "ERROR: Run task kubeconfig first." >&2; exit 1; }
+        deadline=$(($(date +%s) + ${TOKEN_WAIT_SECONDS:-180}))
+        last_reason="gardener Secret not found"
+        while [ "$(date +%s)" -le "$deadline" ]; do
+          kubeconfig_data="$(KUBECONFIG=private/runtime-kubeconfig kubectl get secret gardener -n garden \
+            -o jsonpath='{.data.kubeconfig}' 2>/dev/null || true)"
+          if [ -n "$kubeconfig_data" ]; then
+            token="$(printf '%s' "$kubeconfig_data" | base64 -d 2>/dev/null \
+              | kubectl config view --raw --kubeconfig /dev/stdin -o jsonpath='{.users[0].user.token}' 2>/dev/null || true)"
+            if [ -n "$token" ]; then
+              printf '%s\n' "$token"
+              exit 0
+            fi
+            last_reason="gardener Secret exists but kubeconfig token is empty"
+          fi
+          sleep 5
+        done
+        echo "ERROR: Dashboard token is not ready yet: ${last_reason}." >&2
+        exit 1
+
+  validate-live:
+    desc: Run Chainsaw post-install validation
+    cmds:
+      - |
+        set -euo pipefail
+        die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+        tool() {
+          command -v "$1" >/dev/null 2>&1 || die "$1 not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
+          "$@"
+        }
+
+        [ -f private/runtime-kubeconfig ] || { echo "ERROR: Run task kubeconfig first." >&2; exit 1; }
+
+        provider="{{.PROVIDER}}"
+        case "$provider" in
+          aws | gcp) ;;
+          *) die "unsupported provider '$provider'; expected aws or gcp." ;;
+        esac
+
+        install -d -m 700 private/logs
+        report_dir="private/logs/chainsaw-${provider}-$(date -u +%Y%m%dT%H%M%SZ)"
+        install -d -m 700 "$report_dir"
+
+        tool chainsaw test \
+          tests/chainsaw/post-install/common \
+          "tests/chainsaw/post-install/${provider}" \
+          --cluster "runtime=private/runtime-kubeconfig" \
+          --assert-timeout "${CHAINSAW_ASSERT_TIMEOUT:-10m}" \
+          --fail-fast \
+          --report-format JUNIT-TEST \
+          --report-path "$report_dir" \
+          --report-name chainsaw-report
+
+        echo "Wrote Chainsaw report under $report_dir"
+
+  dashboard:
+    desc: Print Dashboard token and port-forward
+    cmds:
+      - |
+        set -euo pipefail
+        [ -f private/runtime-kubeconfig ] || { echo "ERROR: Run task kubeconfig first." >&2; exit 1; }
+        command -v task >/dev/null 2>&1 || { echo "ERROR: task not found. Run aqua install and add \$(aqua root-dir)/bin to PATH." >&2; exit 1; }
+        token="$(task ops:token)"
+        echo ""
+        echo "Dashboard: http://localhost:8443"
+        echo "Token: $token"
+        echo ""
+        KUBECONFIG=private/runtime-kubeconfig kubectl port-forward svc/gardener-dashboard -n garden 8443:8080
+
+  observability:
+    desc: Probe runtime logs, warnings, and metrics surfaces
+    cmds:
+      - |
+        set -euo pipefail
+        command -v kubectl >/dev/null 2>&1 || { echo "ERROR: kubectl not found. Run aqua install and add \$(aqua root-dir)/bin to PATH." >&2; exit 1; }
+        [ -f private/runtime-kubeconfig ] || { echo "ERROR: Run task kubeconfig first." >&2; exit 1; }
+
+        echo "Runtime API readiness:"
+        KUBECONFIG=private/runtime-kubeconfig kubectl get --raw /readyz
+        echo ""
+
+        echo "Runtime API metrics sample:"
+        metrics_file="$(mktemp)"
+        trap 'rm -f "$metrics_file"' EXIT
+        KUBECONFIG=private/runtime-kubeconfig kubectl get --raw /metrics >"$metrics_file"
+        awk '/^(apiserver_request_total|apiserver_request_duration_seconds|workqueue_depth|rest_client_requests_total)/ { print; count++ } count >= 25 { exit }' "$metrics_file"
+        echo ""
+
+        echo "Garden pods:"
+        KUBECONFIG=private/runtime-kubeconfig kubectl get pods -n garden -o wide 2>/dev/null || true
+        echo ""
+
+        echo "Recent runtime warnings:"
+        KUBECONFIG=private/runtime-kubeconfig kubectl get events -A \
+          --field-selector type=Warning --sort-by=.lastTimestamp 2>/dev/null | tail -n 30 || true
+
+  capture-teardown-diagnostics:
+    desc: Capture redacted final state before deleting kind
+    cmds:
+      - |
+        set -euo pipefail
+        install -d -m 700 private/logs
+        log="private/logs/teardown-$(date -u +%Y%m%dT%H%M%SZ).log"
+        {
+          echo "# Allotment teardown diagnostics"
+          date -u +"timestamp: %Y-%m-%dT%H:%M:%SZ"
+          echo ""
+          if ! kubectl get --raw=/readyz >/dev/null 2>&1; then
+            echo "Cluster: unavailable"
+            exit 0
+          fi
+          echo "## Crossplane"
+          kubectl -n crossplane-system get deploy crossplane 2>/dev/null || true
+          echo ""
+          echo "## Providers"
+          kubectl get provider.pkg 2>/dev/null || true
+          echo ""
+          echo "## Allotment XRs"
+          kubectl get xallotment,xinfra,xworkload,xgarden,xseed,xvirtualgarden --ignore-not-found -o wide 2>/dev/null || true
+          echo ""
+          echo "## Managed resources"
+          kubectl get managed -o wide 2>/dev/null || true
+          echo ""
+          echo "## Recent warnings"
+          kubectl get events -A --field-selector type=Warning --sort-by=.lastTimestamp 2>/dev/null | tail -n 50 || true
+        } | sed -E 's/((token|password|secretAccessKey|accessKeyID)[=: ][^[:space:]]+)/REDACTED/Ig' >"$log"
+        chmod 600 "$log"
+        echo "Wrote $log"
+
+  clean-private:
+    desc: Remove generated logs and kubeconfigs while keeping credentials
+    cmds:
+      - |
+        set -euo pipefail
+        rm -f private/kubeconfig private/runtime-kubeconfig
+        rm -rf private/logs
+        find private -maxdepth 1 -type f -name '*.log' -delete 2>/dev/null || true
+        echo "Removed generated logs and kubeconfigs from private/."
+
+  verify-clean-gcp:
+    desc: Read-only GCP leftover audit
+    cmds:
+      - |
+        set -euo pipefail
+        command -v gcloud >/dev/null 2>&1 || { echo "ERROR: gcloud not found. Run aqua install and add \$(aqua root-dir)/bin to PATH." >&2; exit 1; }
+        project="{{.PROJECT_ID}}"
+        region="{{.REGION}}"
+        cluster="{{.CLUSTER_NAME}}"
+        dns_domain="{{.DNS_DOMAIN}}."
+        found=0
+
+        echo "Checking GCP project ${project} for likely Allotment leftovers..."
+        report_found() {
+          label="$1"
+          value="$2"
+          if [ -n "$value" ]; then
+            echo "FOUND: ${label}"
+            printf '%s\n' "$value"
+            found=1
+          fi
+        }
+
+        if gcloud container clusters describe "$cluster" --region "$region" --project "$project" >/dev/null 2>&1; then
+          echo "FOUND: GKE cluster ${cluster} in ${region}"
+          found=1
+        fi
+
+        zones="$(gcloud dns managed-zones list --project "$project" \
+          --filter="dnsName=${dns_domain}" --format='value(name,dnsName)' 2>/dev/null || true)"
+        report_found "Cloud DNS managed zone(s)" "$zones"
+
+        routers="$(gcloud compute routers list --project "$project" --regions "$region" \
+          --filter="name~${cluster}" --format='value(name,region)' 2>/dev/null || true)"
+        report_found "Cloud Router(s)" "$routers"
+
+        instances="$(gcloud compute instances list --project "$project" \
+          --filter="name~^${cluster}" --format='value(name,zone,status)' 2>/dev/null || true)"
+        report_found "Compute instance(s)" "$instances"
+
+        disks="$(gcloud compute disks list --project "$project" \
+          --filter="name~^${cluster}" --format='value(name,zone,status)' 2>/dev/null || true)"
+        report_found "Compute disk(s)" "$disks"
+
+        addresses="$(gcloud compute addresses list --project "$project" \
+          --filter="name~^${cluster}" --format='value(name,region,address)' 2>/dev/null || true)"
+        report_found "Compute address(es)" "$addresses"
+
+        forwarding_rules="$(gcloud compute forwarding-rules list --project "$project" \
+          --filter="name~^${cluster}" --format='value(name,region,IPAddress)' 2>/dev/null || true)"
+        report_found "Forwarding rule(s)" "$forwarding_rules"
+
+        firewall_rules="$(gcloud compute firewall-rules list --project "$project" \
+          --filter="name~^${cluster}" --format='value(name,network)' 2>/dev/null || true)"
+        report_found "Firewall rule(s)" "$firewall_rules"
+
+        subnetworks="$(gcloud compute networks subnets list --project "$project" \
+          --filter="name~^${cluster}" --format='value(name,region,network)' 2>/dev/null || true)"
+        report_found "Subnetwork(s)" "$subnetworks"
+
+        for suffix in bootstrap crossplane gardener; do
+          if gcloud iam service-accounts describe "${cluster}-${suffix}@${project}.iam.gserviceaccount.com" \
+            --project "$project" >/dev/null 2>&1; then
+            echo "FOUND: service account ${cluster}-${suffix}@${project}.iam.gserviceaccount.com"
+            found=1
+          fi
+        done
+
+        iam_bindings="$(gcloud projects get-iam-policy "$project" \
+          --flatten='bindings[].members' --format='value(bindings.role,bindings.members)' 2>/dev/null \
+          | grep -E "${cluster}-(bootstrap|crossplane|gardener)@${project}\\.iam\\.gserviceaccount\\.com" || true)"
+        report_found "Project IAM binding(s) for Allotment service account(s)" "$iam_bindings"
+
+        if [ "$found" -eq 0 ]; then
+          echo "No likely GCP leftovers found by deterministic name checks."
+        else
+          echo "Likely GCP leftovers found. Inspect provider state before considering cleanup complete." >&2
+          exit 1
+        fi
+
+  verify-clean-aws:
+    desc: Read-only AWS leftover audit
+    cmds:
+      - |
+        set -euo pipefail
+        command -v aws >/dev/null 2>&1 || { echo "ERROR: aws not found. Run aqua install and add \$(aqua root-dir)/bin to PATH." >&2; exit 1; }
+        export AWS_PROFILE="{{.AWS_PROFILE}}"
+        region="{{.REGION}}"
+        cluster="{{.CLUSTER_NAME}}"
+        dns_domain="{{.DNS_DOMAIN}}"
+        found=0
+
+        echo "Checking AWS region ${region} for likely Allotment leftovers..."
+        report_found() {
+          label="$1"
+          value="$2"
+          if [ -n "$value" ] && [ "$value" != "None" ]; then
+            echo "FOUND: ${label}"
+            printf '%s\n' "$value"
+            found=1
+          fi
+        }
+
+        if aws eks describe-cluster --name "$cluster" --region "$region" >/dev/null 2>&1; then
+          echo "FOUND: EKS cluster ${cluster} in ${region}"
+          found=1
+        fi
+
+        vpcs="$(aws ec2 describe-vpcs --region "$region" \
+          --filters "Name=tag:Name,Values=${cluster}-vpc" \
+          --query 'Vpcs[].VpcId' --output text 2>/dev/null || true)"
+        report_found "VPC(s) tagged ${cluster}-vpc" "$vpcs"
+
+        subnets="$(aws ec2 describe-subnets --region "$region" \
+          --filters "Name=tag:Name,Values=${cluster}-*" \
+          --query 'Subnets[].SubnetId' --output text 2>/dev/null || true)"
+        report_found "Subnet(s) tagged ${cluster}-*" "$subnets"
+
+        route_tables="$(aws ec2 describe-route-tables --region "$region" \
+          --filters "Name=tag:Name,Values=${cluster}-*" \
+          --query 'RouteTables[].RouteTableId' --output text 2>/dev/null || true)"
+        report_found "Route table(s) tagged ${cluster}-*" "$route_tables"
+
+        internet_gateways="$(aws ec2 describe-internet-gateways --region "$region" \
+          --filters "Name=tag:Name,Values=${cluster}-*" \
+          --query 'InternetGateways[].InternetGatewayId' --output text 2>/dev/null || true)"
+        report_found "Internet gateway(s) tagged ${cluster}-*" "$internet_gateways"
+
+        # Exclude deleted/deleting: AWS keeps terminal-state NAT gateways visible in
+        # describe output for ~1h after teardown, which would be a false leftover.
+        nat_gateways="$(aws ec2 describe-nat-gateways --region "$region" \
+          --filter "Name=tag:Name,Values=${cluster}-*" "Name=state,Values=pending,available,failed" \
+          --query 'NatGateways[].NatGatewayId' --output text 2>/dev/null || true)"
+        report_found "NAT gateway(s) tagged ${cluster}-*" "$nat_gateways"
+
+        eips="$(aws ec2 describe-addresses --region "$region" \
+          --filters "Name=tag:Name,Values=${cluster}-*" \
+          --query 'Addresses[].AllocationId' --output text 2>/dev/null || true)"
+        report_found "Elastic IP(s) tagged ${cluster}-*" "$eips"
+
+        security_groups="$(aws ec2 describe-security-groups --region "$region" \
+          --filters "Name=tag:Name,Values=${cluster}-*" \
+          --query 'SecurityGroups[].GroupId' --output text 2>/dev/null || true)"
+        report_found "Security group(s) tagged ${cluster}-*" "$security_groups"
+
+        zones="$(aws route53 list-hosted-zones-by-name --dns-name "$dns_domain" \
+          --query "HostedZones[?Name=='${dns_domain}.'].Id" --output text 2>/dev/null || true)"
+        report_found "Route 53 hosted zone(s) for ${dns_domain}" "$zones"
+
+        for suffix in bootstrap crossplane gardener; do
+          if aws iam get-user --user-name "${cluster}-${suffix}" >/dev/null 2>&1; then
+            echo "FOUND: IAM user ${cluster}-${suffix}"
+            found=1
+          fi
+        done
+
+        roles="$(aws iam list-roles \
+          --query "Roles[?starts_with(RoleName, '${cluster}-')].RoleName" \
+          --output text 2>/dev/null || true)"
+        report_found "IAM role(s) with ${cluster}- prefix" "$roles"
+
+        buckets="$(aws s3api list-buckets \
+          --query "Buckets[?starts_with(Name, '${cluster}-')].Name" \
+          --output text 2>/dev/null || true)"
+        report_found "S3 bucket(s) with ${cluster}- prefix" "$buckets"
+
+        if [ "$found" -eq 0 ]; then
+          echo "No likely AWS leftovers found by deterministic name checks."
+        else
+          echo "Likely AWS leftovers found. Inspect provider state before considering cleanup complete." >&2
+          exit 1
+        fi

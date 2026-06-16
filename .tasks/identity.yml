@@ -1,0 +1,299 @@
+version: '3'
+
+silent: true
+
+tasks:
+  load-identity-aws:
+    desc: Load AWS credentials into Crossplane
+    cmds:
+      - |
+        set -euo pipefail
+        die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+        aws_credential_value() {
+          sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" private/aws-credentials | head -n 1
+        }
+
+        command -v kubectl >/dev/null 2>&1 || die "kubectl not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
+        kubectl get namespace crossplane-system >/dev/null 2>&1 \
+          || die "crossplane-system namespace not found. Run task install until Crossplane is installed, then retry."
+
+        install -d -m 700 private
+        if [ -s private/aws-credentials ]; then
+          chmod 600 private/aws-credentials
+        else
+          command -v aws >/dev/null 2>&1 || die "aws not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
+          echo "Writing private/aws-credentials from AWS profile '{{.AWS_PROFILE}}'..."
+          env_output="$(aws configure export-credentials --profile "{{.AWS_PROFILE}}" --format env-no-export)"
+          access_key=""
+          secret_key=""
+          session_token=""
+          while IFS='=' read -r key value; do
+            value="${value%$'\r'}"
+            value="${value%\"}"
+            value="${value#\"}"
+            case "$key" in
+              AWS_ACCESS_KEY_ID) access_key="$value" ;;
+              AWS_SECRET_ACCESS_KEY) secret_key="$value" ;;
+              AWS_SESSION_TOKEN) session_token="$value" ;;
+            esac
+          done <<<"$env_output"
+          [ -n "$access_key" ] && [ -n "$secret_key" ] \
+            || die "AWS profile '{{.AWS_PROFILE}}' did not resolve access key credentials."
+          [ -z "$session_token" ] \
+            || die "AWS profile '{{.AWS_PROFILE}}' resolved temporary session credentials. Gardener AWS secrets currently require non-expiring access key credentials."
+          install -m 600 /dev/null private/aws-credentials
+          {
+            printf '[default]\n'
+            printf 'aws_access_key_id = %s\n' "$access_key"
+            printf 'aws_secret_access_key = %s\n' "$secret_key"
+          } >private/aws-credentials
+          chmod 600 private/aws-credentials
+        fi
+
+        [ -z "$(aws_credential_value aws_session_token)" ] \
+          || die "private/aws-credentials contains aws_session_token. Temporary AWS credentials are not supported for Gardener secrets."
+        access_key="$(aws_credential_value aws_access_key_id)"
+        secret_key="$(aws_credential_value aws_secret_access_key)"
+        [ -n "$access_key" ] || die "private/aws-credentials missing aws_access_key_id."
+        [ -n "$secret_key" ] || die "private/aws-credentials missing aws_secret_access_key."
+
+        kubectl create secret generic aws-credentials -n crossplane-system \
+          --from-file=credentials=private/aws-credentials --dry-run=client -o yaml \
+          | kubectl apply -f - >/dev/null
+        kubectl create secret generic gardener-sa-key -n crossplane-system \
+          --from-literal=accessKeyID="$access_key" \
+          --from-literal=secretAccessKey="$secret_key" \
+          --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+        echo "Loaded AWS identity into crossplane-system."
+
+  load-identity-gcp:
+    desc: Load GCP credentials into Crossplane
+    cmds:
+      - |
+        set -euo pipefail
+        die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+        yq_eval() {
+          command -v yq >/dev/null 2>&1 || die "yq not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
+          yq -r "$1" "$2"
+        }
+
+        command -v kubectl >/dev/null 2>&1 || die "kubectl not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
+        kubectl get namespace crossplane-system >/dev/null 2>&1 \
+          || die "crossplane-system namespace not found. Run task install until Crossplane is installed, then retry."
+
+        install -d -m 700 private
+        if [ ! -s private/gcp-credentials.json ]; then
+          [ -n "${GCP_CREDENTIALS_FILE:-}" ] \
+            || die "private/gcp-credentials.json not found. Run task bootstrap-identity or set GCP_CREDENTIALS_FILE."
+          [ -f "$GCP_CREDENTIALS_FILE" ] || die "GCP_CREDENTIALS_FILE '$GCP_CREDENTIALS_FILE' not found."
+          install -m 600 "$GCP_CREDENTIALS_FILE" private/gcp-credentials.json
+        fi
+        chmod 600 private/gcp-credentials.json
+        client_email="$(yq_eval '.client_email // ""' private/gcp-credentials.json)"
+        [ -n "$client_email" ] || die "private/gcp-credentials.json does not look like a service account key."
+
+        kubectl create secret generic gcp-credentials -n crossplane-system \
+          --from-file=credentials=private/gcp-credentials.json --dry-run=client -o yaml \
+          | kubectl apply -f - >/dev/null
+        kubectl create secret generic gardener-sa-key -n crossplane-system \
+          --from-file=serviceaccount.json=private/gcp-credentials.json --dry-run=client -o yaml \
+          | kubectl apply -f - >/dev/null
+        echo "Loaded GCP identity into crossplane-system."
+
+  bootstrap-identity-aws:
+    desc: Create disposable AWS credentials
+    cmds:
+      - |
+        set -euo pipefail
+        die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+        run_task() {
+          command -v task >/dev/null 2>&1 || die "task not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
+          task "$@"
+        }
+
+        command -v aws >/dev/null 2>&1 || die "aws not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
+        AWS_PROFILE="{{.AWS_PROFILE}}" aws sts get-caller-identity >/dev/null \
+          || die "AWS profile '{{.AWS_PROFILE}}' is not authenticated."
+        install -d -m 700 private
+        [ ! -e private/aws-credentials ] \
+          || die "private/aws-credentials already exists. Refusing to create another AWS access key."
+
+        export AWS_PROFILE="{{.AWS_PROFILE}}"
+        cluster="{{.CLUSTER_NAME}}"
+        aws iam create-user --user-name "${cluster}-bootstrap" 2>/dev/null || true
+        existing_keys="$(aws iam list-access-keys --user-name "${cluster}-bootstrap" \
+          --query 'length(AccessKeyMetadata)' --output text 2>/dev/null || printf '0')"
+        [ "$existing_keys" = "0" ] \
+          || die "IAM user ${cluster}-bootstrap already has access keys. Run task deauth or remove them manually before bootstrapping."
+
+        for policy in \
+          arn:aws:iam::aws:policy/AmazonEC2FullAccess \
+          arn:aws:iam::aws:policy/AmazonRoute53FullAccess \
+          arn:aws:iam::aws:policy/IAMFullAccess \
+          arn:aws:iam::aws:policy/AmazonS3FullAccess; do
+          aws iam attach-user-policy --user-name "${cluster}-bootstrap" --policy-arn "$policy" 2>/dev/null
+        done
+        aws iam put-user-policy --user-name "${cluster}-bootstrap" --policy-name EKSFullAccess \
+          --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"eks:*","Resource":"*"}]}'
+
+        install -m 600 /dev/null private/aws-credentials
+        aws iam create-access-key --user-name "${cluster}-bootstrap" \
+          --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text \
+          | {
+            read -r access_key secret_key
+            printf '[default]\naws_access_key_id = %s\naws_secret_access_key = %s\n' \
+              "$access_key" "$secret_key" >private/aws-credentials
+          }
+        chmod 600 private/aws-credentials
+        echo "Wrote private/aws-credentials."
+
+        if command -v kubectl >/dev/null 2>&1 && kubectl get namespace crossplane-system >/dev/null 2>&1; then
+          run_task identity:load-identity-aws
+        else
+          echo "Identity is ready. task install will load it into Crossplane."
+        fi
+
+  bootstrap-identity-gcp:
+    desc: Create disposable GCP credentials
+    cmds:
+      - |
+        set -euo pipefail
+        die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+        run_task() {
+          command -v task >/dev/null 2>&1 || die "task not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
+          task "$@"
+        }
+
+        command -v gcloud >/dev/null 2>&1 || die "gcloud not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
+        account="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' | sed -n '1p')"
+        [ -n "$account" ] || die "gcloud has no active account."
+        install -d -m 700 private
+        [ ! -e private/gcp-credentials.json ] \
+          || die "private/gcp-credentials.json already exists. Refusing to create another GCP service account key."
+
+        project="{{.PROJECT_ID}}"
+        cluster="{{.CLUSTER_NAME}}"
+        for api in iam compute container dns storage cloudresourcemanager serviceusage; do
+          gcloud services enable "${api}.googleapis.com" --project "$project" >/dev/null
+        done
+        gcloud iam service-accounts create "${cluster}-bootstrap" \
+          --project "$project" --display-name "Allotment Bootstrap" 2>/dev/null || true
+        while ! gcloud iam service-accounts describe \
+          "${cluster}-bootstrap@${project}.iam.gserviceaccount.com" \
+          --project "$project" >/dev/null 2>&1; do
+          sleep 2
+        done
+        for role in \
+          roles/compute.admin \
+          roles/container.admin \
+          roles/dns.admin \
+          roles/storage.admin \
+          roles/iam.serviceAccountAdmin \
+          roles/iam.serviceAccountKeyAdmin \
+          roles/iam.serviceAccountUser \
+          roles/resourcemanager.projectIamAdmin \
+          roles/serviceusage.serviceUsageAdmin; do
+          gcloud projects add-iam-policy-binding "$project" \
+            --member="serviceAccount:${cluster}-bootstrap@${project}.iam.gserviceaccount.com" \
+            --role="$role" --condition=None --quiet >/dev/null
+        done
+
+        gcloud iam service-accounts keys create private/gcp-credentials.json \
+          --iam-account="${cluster}-bootstrap@${project}.iam.gserviceaccount.com" \
+          --project="$project"
+        chmod 600 private/gcp-credentials.json
+        echo "Wrote private/gcp-credentials.json."
+
+        if command -v kubectl >/dev/null 2>&1 && kubectl get namespace crossplane-system >/dev/null 2>&1; then
+          run_task identity:load-identity-gcp
+        else
+          echo "Identity is ready. task install will load it into Crossplane."
+        fi
+
+  deauth-aws:
+    desc: Remove AWS bootstrap identity and local credentials
+    cmds:
+      - |
+        set -euo pipefail
+        die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+        command -v aws >/dev/null 2>&1 || die "aws not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
+        command -v kubectl >/dev/null 2>&1 || die "kubectl not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
+
+        if kubectl get --raw=/readyz >/dev/null 2>&1; then
+          blockers="$({
+            kubectl get xallotment,xinfra,xworkload,xgarden,xseed,xvirtualgarden \
+              --ignore-not-found -o name 2>/dev/null || true
+            kubectl get managed -o name 2>/dev/null || true
+          } | sed '/^[[:space:]]*$/d')"
+          if [ -n "$blockers" ] && [ "${FORCE:-}" != "1" ]; then
+            printf 'Active Crossplane resources still exist:\n%s\n' "$blockers" >&2
+            die "refusing to remove cloud identity while resources may still need it. Run task teardown first, or FORCE=1 task deauth."
+          fi
+        fi
+
+        export AWS_PROFILE="{{.AWS_PROFILE}}"
+        cluster="{{.CLUSTER_NAME}}"
+        for key in $(aws iam list-access-keys --user-name "${cluster}-bootstrap" \
+          --query 'AccessKeyMetadata[].AccessKeyId' --output text 2>/dev/null); do
+          aws iam delete-access-key --user-name "${cluster}-bootstrap" --access-key-id "$key" 2>/dev/null
+        done
+        for arn in $(aws iam list-attached-user-policies --user-name "${cluster}-bootstrap" \
+          --query 'AttachedPolicies[].PolicyArn' --output text 2>/dev/null); do
+          aws iam detach-user-policy --user-name "${cluster}-bootstrap" --policy-arn "$arn" 2>/dev/null
+        done
+        aws iam delete-user-policy --user-name "${cluster}-bootstrap" --policy-name EKSFullAccess 2>/dev/null || true
+        aws iam delete-user --user-name "${cluster}-bootstrap" 2>/dev/null || true
+        rm -f private/aws-credentials private/aws-access-key.json private/aws-access-key
+        echo "Removed AWS bootstrap identity and local credentials."
+
+  deauth-gcp:
+    desc: Remove GCP bootstrap identity and local credentials
+    cmds:
+      - |
+        set -euo pipefail
+        die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+        command -v gcloud >/dev/null 2>&1 || die "gcloud not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
+        command -v kubectl >/dev/null 2>&1 || die "kubectl not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
+
+        if kubectl get --raw=/readyz >/dev/null 2>&1; then
+          blockers="$({
+            kubectl get xallotment,xinfra,xworkload,xgarden,xseed,xvirtualgarden \
+              --ignore-not-found -o name 2>/dev/null || true
+            kubectl get managed -o name 2>/dev/null || true
+          } | sed '/^[[:space:]]*$/d')"
+          if [ -n "$blockers" ] && [ "${FORCE:-}" != "1" ]; then
+            printf 'Active Crossplane resources still exist:\n%s\n' "$blockers" >&2
+            die "refusing to remove cloud identity while resources may still need it. Run task teardown first, or FORCE=1 task deauth."
+          fi
+        fi
+
+        project="{{.PROJECT_ID}}"
+        cluster="{{.CLUSTER_NAME}}"
+        service_account="${cluster}-bootstrap@${project}.iam.gserviceaccount.com"
+        for role in \
+          roles/compute.admin \
+          roles/container.admin \
+          roles/dns.admin \
+          roles/storage.admin \
+          roles/iam.serviceAccountAdmin \
+          roles/iam.serviceAccountKeyAdmin \
+          roles/iam.serviceAccountUser \
+          roles/resourcemanager.projectIamAdmin \
+          roles/serviceusage.serviceUsageAdmin; do
+          gcloud projects remove-iam-policy-binding "$project" \
+            --member="serviceAccount:${service_account}" \
+            --role="$role" --condition=None --quiet >/dev/null 2>&1 || true
+        done
+        gcloud iam service-accounts keys list \
+          --iam-account="${service_account}" \
+          --project="$project" --managed-by=user --format="value(KEY_ID)" 2>/dev/null \
+          | while read -r key; do
+            [ -n "$key" ] || continue
+            gcloud iam service-accounts keys delete "$key" \
+              --iam-account="${service_account}" \
+              --project="$project" --quiet 2>/dev/null
+          done
+        gcloud iam service-accounts delete "${service_account}" \
+          --project="$project" --quiet 2>/dev/null || true
+        rm -f private/gcp-credentials.json
+        echo "Removed GCP bootstrap identity and local credentials."

@@ -1,0 +1,126 @@
+version: '3'
+
+silent: true
+
+tasks:
+  preflight-config:
+    desc: Validate deploy/config.yaml and provider files
+    cmds:
+      - |
+        set -euo pipefail
+        die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+        yq_eval() {
+          command -v yq >/dev/null 2>&1 || die "yq not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
+          yq -r "$1" deploy/config.yaml
+        }
+
+        [ -f deploy/config.yaml ] || die "deploy/config.yaml not found."
+        provider="$(yq_eval '.data.provider // ""')"
+        case "$provider" in
+          aws | gcp) ;;
+          "") die "provider not set in deploy/config.yaml." ;;
+          *) die "unsupported provider '$provider'; expected aws or gcp." ;;
+        esac
+
+        for key in projectId region clusterName dnsDomain; do
+          value="$(yq_eval ".data.${key} // \"\"")"
+          [ -n "$value" ] || die "$key not set in deploy/config.yaml."
+          [ "$value" != "REPLACE" ] || die "$key must not be REPLACE in deploy/config.yaml."
+        done
+
+        created_by="$(yq_eval '.data.createdBy // ""')"
+        if [ -n "$created_by" ]; then
+          case "$created_by" in
+            *[!a-z0-9_-]*) die "createdBy must use only lowercase letters, numbers, underscores, and dashes." ;;
+          esac
+        fi
+        expires_at="$(yq_eval '.data.expiresAt // ""')"
+        if [ -n "$expires_at" ]; then
+          case "$expires_at" in
+            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *) die "expiresAt must be YYYY-MM-DD when set." ;;
+          esac
+        fi
+
+        region="$(yq_eval '.data.region // ""')"
+        case "$region" in
+          [a-z]*[0-9]) ;;
+          *) die "region '$region' does not look like a cloud region." ;;
+        esac
+
+        zone_count="$(yq_eval '.data.zones | length')"
+        [ "$zone_count" = "2" ] || die "zones must contain exactly two zones for the selected region."
+        for index in 0 1; do
+          zone="$(yq_eval ".data.zones[$index] // \"\"")"
+          [ -n "$zone" ] || die "zones[$index] not set in deploy/config.yaml."
+          case "$provider" in
+            aws)
+              case "$zone" in
+                "${region}"[a-z]) ;;
+                *) die "AWS zone '$zone' must be in region '$region'." ;;
+              esac
+              ;;
+            gcp)
+              case "$zone" in
+                "${region}"-[a-z]) ;;
+                *) die "GCP zone '$zone' must be in region '$region'." ;;
+              esac
+              ;;
+          esac
+        done
+
+        if [ "$provider" = "aws" ]; then
+          aws_gardenlinux_ami="$(yq_eval '.data.awsGardenlinuxAmi // ""')"
+          case "$aws_gardenlinux_ami" in
+            ami-*) ;;
+            "") die "awsGardenlinuxAmi not set in deploy/config.yaml." ;;
+            *) die "awsGardenlinuxAmi '$aws_gardenlinux_ami' does not look like an AWS AMI ID." ;;
+          esac
+        else
+          vpc_network="$(yq_eval '.data.vpcNetwork // ""')"
+          [ -n "$vpc_network" ] || die "vpcNetwork not set in deploy/config.yaml."
+          [ "$vpc_network" != "REPLACE" ] || die "vpcNetwork must not be REPLACE in deploy/config.yaml."
+          gcp_nodes_per_zone="$(yq_eval '.data.gcpNodesPerZone // ""')"
+          if [ -n "$gcp_nodes_per_zone" ]; then
+            case "$gcp_nodes_per_zone" in
+              *[!0-9]*) die "gcpNodesPerZone must be a positive integer." ;;
+              0) die "gcpNodesPerZone must be greater than zero." ;;
+            esac
+          fi
+        fi
+
+        [ -f "bootstrap/providers-${provider}.yaml" ] || die "bootstrap/providers-${provider}.yaml not found."
+        [ -d "platform/compositions/${provider}" ] || die "platform/compositions/${provider}/ not found."
+        [ -d "deploy/claims/${provider}" ] || die "deploy/claims/${provider}/ not found."
+
+  preflight-install:
+    desc: Validate install prerequisites
+    cmds:
+      - task: preflight-config
+      - |
+        set -euo pipefail
+        die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+        require_command() {
+          command -v "$1" >/dev/null 2>&1 || die "$1 not found. $2"
+        }
+
+        require_command kind "Run aqua install and add \$(aqua root-dir)/bin to PATH."
+        require_command kubectl "Run aqua install and add \$(aqua root-dir)/bin to PATH."
+
+        case "{{.PROVIDER}}" in
+          aws)
+            if [ ! -s private/aws-credentials ]; then
+              require_command aws "Run aqua install and add \$(aqua root-dir)/bin to PATH, or run task bootstrap-identity first."
+              AWS_PROFILE="{{.AWS_PROFILE}}" aws sts get-caller-identity >/dev/null \
+                || die "AWS profile '{{.AWS_PROFILE}}' is not authenticated."
+            fi
+            ;;
+          gcp)
+            if [ ! -s private/gcp-credentials.json ] && [ -z "${GCP_CREDENTIALS_FILE:-}" ]; then
+              die "private/gcp-credentials.json not found. Run task bootstrap-identity or set GCP_CREDENTIALS_FILE."
+            fi
+            if [ -n "${GCP_CREDENTIALS_FILE:-}" ] && [ ! -f "$GCP_CREDENTIALS_FILE" ]; then
+              die "GCP_CREDENTIALS_FILE '$GCP_CREDENTIALS_FILE' not found."
+            fi
+            ;;
+        esac

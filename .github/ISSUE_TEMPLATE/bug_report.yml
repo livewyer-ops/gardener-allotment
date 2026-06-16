@@ -1,0 +1,51 @@
+name: Bug report
+description: Report a reproducible problem with Allotment
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include secrets, kubeconfigs, access keys, service-account keys, or full tokens.
+  - type: input
+    id: provider
+    attributes:
+      label: Provider
+      description: Which provider were you using?
+      placeholder: gcp or aws
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: Paste non-secret `deploy/config.yaml` fields or describe changes from the example.
+      render: yaml
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. task bootstrap-identity
+        2. task install
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Include redacted output from `task status` and relevant warning events.
+      render: shell

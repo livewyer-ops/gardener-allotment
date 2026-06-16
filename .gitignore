@@ -1,0 +1,35 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+*.bak
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Claude Code
+.claude/
+.playwright-mcp/
+# Local AI-agent guidance / internal engineering standards — kept locally, not published
+/CLAUDE.md
+
+# Secrets / credentials
+private/
+
+# User deployment config (deploy/claims/ is committed)
+deploy/config.yaml
+deploy/credentials
+gcp-credentials*.json
+*.pem
+*.key
+kubeconfig
+*.kubeconfig
+
+# Vendored references (root-level only; must not match docs/reference/)
+/reference/

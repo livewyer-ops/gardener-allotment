@@ -1,0 +1,22 @@
+# Default maintainers for all repository changes.
+* @livewyer-ops/allotment-maintainers
+
+# Public project process and automation.
+/.github/ @livewyer-ops/allotment-maintainers
+/renovate.json @livewyer-ops/allotment-maintainers
+
+# User-facing documentation and project policy.
+/README.md @livewyer-ops/allotment-maintainers
+/CONTRIBUTING.md @livewyer-ops/allotment-maintainers
+/CODE_OF_CONDUCT.md @livewyer-ops/allotment-maintainers
+/SECURITY.md @livewyer-ops/allotment-maintainers
+/SUPPORT.md @livewyer-ops/allotment-maintainers
+/docs/ @livewyer-ops/allotment-maintainers
+
+# Operational and cloud-resource surfaces.
+/Taskfile.yml @livewyer-ops/allotment-maintainers
+/.tasks/ @livewyer-ops/allotment-maintainers
+/bootstrap/ @livewyer-ops/allotment-maintainers
+/deploy/ @livewyer-ops/allotment-maintainers
+/platform/ @livewyer-ops/allotment-maintainers
+/tests/ @livewyer-ops/allotment-maintainers

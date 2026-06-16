@@ -1,0 +1,16 @@
+extends: default
+
+ignore: |
+  bootstrap/crossplane.yaml
+
+rules:
+  line-length:
+    max: 300
+  truthy:
+    check-keys: false
+  comments:
+    min-spaces-from-content: 1
+  indentation:
+    spaces: 2
+    indent-sequences: whatever
+  document-start: disable

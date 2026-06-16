@@ -1,0 +1,19 @@
+registries:
+  - type: standard
+    ref: v4.524.0 # renovate: depName=aquaproj/aqua-registry
+
+packages:
+  - name: go-task/task@v3.51.1
+  - name: mikefarah/yq@v4.53.3
+  - name: jqlang/jq@jq-1.8.1
+  - name: koalaman/shellcheck@v0.11.0
+  - name: wasilibs/go-yamllint@v1.38.0
+  - name: yannh/kubeconform@v0.8.0
+  - name: kyverno/chainsaw@v0.2.15
+  - name: crossplane/crossplane@v2.3.2
+  - name: kubernetes-sigs/kind@v0.32.0
+  - name: kubernetes/kubectl@v1.35.5
+  - name: aws/aws-cli@2.35.4
+  - name: twistedpair/google-cloud-sdk@562.0.0
+  - name: golang/go@go1.26.4
+  - name: kubernetes/cloud-provider-gcp/gke-gcloud-auth-plugin@v36.1.2

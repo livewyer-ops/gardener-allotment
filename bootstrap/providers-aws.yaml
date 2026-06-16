@@ -1,0 +1,41 @@
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-family-aws
+spec:
+  package: xpkg.upbound.io/upbound/provider-family-aws:v2.6.0
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-aws-ec2
+spec:
+  package: xpkg.upbound.io/upbound/provider-aws-ec2:v2.6.0
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-aws-eks
+spec:
+  package: xpkg.upbound.io/upbound/provider-aws-eks:v2.6.0
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-aws-iam
+spec:
+  package: xpkg.upbound.io/upbound/provider-aws-iam:v2.6.0
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-aws-route53
+spec:
+  package: xpkg.upbound.io/upbound/provider-aws-route53:v2.6.0
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-aws-s3
+spec:
+  package: xpkg.upbound.io/upbound/provider-aws-s3:v2.6.0

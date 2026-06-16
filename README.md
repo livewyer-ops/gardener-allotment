@@ -54,7 +54,7 @@ task deauth       # Remove bootstrap identity and local credentials
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) and a running Docker daemon
-- [aqua](https://aquaproj.github.io/) for the pinned project toolchain
+- [aqua](https://aquaproj.github.io/docs/install/) for the pinned project toolchain
 - **GCP**: a dedicated project with billing enabled and permission to enable
   APIs, create service accounts/keys, and grant project roles
 - **AWS**: a dedicated account/profile with IAM admin access for the evaluation

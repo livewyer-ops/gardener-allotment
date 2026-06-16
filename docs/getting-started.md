@@ -43,7 +43,7 @@ credentials and real billable resources.
 Install the local prerequisites:
 
 - Docker
-- aqua
+- [aqua](https://aquaproj.github.io/docs/install/)
 
 Then clone the repository, install aqua-managed tools, and add aqua's bin
 directory to your shell path:

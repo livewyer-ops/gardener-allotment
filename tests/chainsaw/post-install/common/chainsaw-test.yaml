@@ -1,0 +1,59 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: allotment-post-install-common
+spec:
+  description: Validate the reconciled Allotment control plane and runtime Garden.
+  timeouts:
+    assert: 10m
+  steps:
+    - name: control-plane-ready
+      try:
+        - description: Root XAllotment is Ready.
+          assert:
+            resource:
+              apiVersion: allotment.io/v1alpha1
+              kind: XAllotment
+              metadata:
+                name: garden
+              status:
+                (conditions[?type == 'Ready']):
+                  - status: "True"
+        - description: Child XRs are Ready.
+          assert:
+            file: child-xrs-ready.yaml
+        - description: Common providers are Healthy.
+          assert:
+            file: common-providers-ready.yaml
+
+    - name: runtime-garden-ready
+      try:
+        - description: Runtime Garden has completed reconciliation.
+          assert:
+            cluster: runtime
+            resource:
+              apiVersion: operator.gardener.cloud/v1alpha1
+              kind: Garden
+              metadata:
+                name: core
+              status:
+                lastOperation:
+                  state: Succeeded
+                (conditions[?type == 'VirtualGardenAPIServerAvailable']):
+                  - status: "True"
+                (conditions[?type == 'RuntimeComponentsHealthy']):
+                  - status: "True"
+                (conditions[?type == 'VirtualComponentsHealthy']):
+                  - status: "True"
+                (conditions[?type == 'ObservabilityComponentsHealthy']):
+                  - status: "True"
+        - description: Dashboard kubeconfig secret is present.
+          assert:
+            cluster: runtime
+            resource:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: gardener
+                namespace: garden
+              (data.kubeconfig != ''): true

@@ -1,0 +1,39 @@
+apiVersion: allotment.io/v1alpha1
+kind: XInfra
+metadata:
+  name: garden-infra
+status:
+  (conditions[?type == 'Ready']):
+    - status: "True"
+---
+apiVersion: allotment.io/v1alpha1
+kind: XWorkload
+metadata:
+  name: garden-workload
+status:
+  (conditions[?type == 'Ready']):
+    - status: "True"
+---
+apiVersion: allotment.io/v1alpha1
+kind: XGarden
+metadata:
+  name: garden-core
+status:
+  (conditions[?type == 'Ready']):
+    - status: "True"
+---
+apiVersion: allotment.io/v1alpha1
+kind: XSeed
+metadata:
+  name: garden-seed
+status:
+  (conditions[?type == 'Ready']):
+    - status: "True"
+---
+apiVersion: allotment.io/v1alpha1
+kind: XVirtualGarden
+metadata:
+  name: garden-virtual
+status:
+  (conditions[?type == 'Ready']):
+    - status: "True"

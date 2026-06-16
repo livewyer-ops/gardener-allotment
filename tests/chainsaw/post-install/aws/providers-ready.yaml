@@ -1,0 +1,47 @@
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-family-aws
+status:
+  (conditions[?type == 'Healthy']):
+    - status: "True"
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-aws-ec2
+status:
+  (conditions[?type == 'Healthy']):
+    - status: "True"
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-aws-eks
+status:
+  (conditions[?type == 'Healthy']):
+    - status: "True"
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-aws-iam
+status:
+  (conditions[?type == 'Healthy']):
+    - status: "True"
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-aws-route53
+status:
+  (conditions[?type == 'Healthy']):
+    - status: "True"
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-aws-s3
+status:
+  (conditions[?type == 'Healthy']):
+    - status: "True"

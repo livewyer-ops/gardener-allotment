@@ -1,0 +1,13 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: allotment-post-install-gcp
+spec:
+  description: Validate GCP-specific provider health after Allotment reconciliation.
+  timeouts:
+    assert: 10m
+  steps:
+    - name: gcp-providers-ready
+      try:
+        - assert:
+            file: providers-ready.yaml

@@ -1,0 +1,13 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: allotment-post-install-aws
+spec:
+  description: Validate AWS-specific provider health after Allotment reconciliation.
+  timeouts:
+    assert: 10m
+  steps:
+    - name: aws-providers-ready
+      try:
+        - assert:
+            file: providers-ready.yaml

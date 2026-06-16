@@ -1,0 +1,47 @@
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-family-gcp
+status:
+  (conditions[?type == 'Healthy']):
+    - status: "True"
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-gcp-compute
+status:
+  (conditions[?type == 'Healthy']):
+    - status: "True"
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-gcp-cloudplatform
+status:
+  (conditions[?type == 'Healthy']):
+    - status: "True"
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-gcp-container
+status:
+  (conditions[?type == 'Healthy']):
+    - status: "True"
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-gcp-dns
+status:
+  (conditions[?type == 'Healthy']):
+    - status: "True"
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-gcp-storage
+status:
+  (conditions[?type == 'Healthy']):
+    - status: "True"

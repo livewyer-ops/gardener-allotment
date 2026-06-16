@@ -1,0 +1,15 @@
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: crossplane-contrib-provider-helm
+status:
+  (conditions[?type == 'Healthy']):
+    - status: "True"
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: crossplane-contrib-provider-kubernetes
+status:
+  (conditions[?type == 'Healthy']):
+    - status: "True"

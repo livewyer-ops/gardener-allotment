@@ -1,0 +1,24 @@
+# Shared version management — provider-agnostic Gardener components.
+# Update versions here — compositions read them via function-environment-configs.
+apiVersion: apiextensions.crossplane.io/v1beta1
+kind: EnvironmentConfig
+metadata:
+  name: allotment-versions
+data:
+  # Gardener core
+  gardenerVersion: v1.144.1
+  gardenletVersion: v1.144.1
+  certManagerVersion: v1.20.2
+  virtualGardenKubernetesVersion: "1.35.5"
+  shootKubernetesVersion: "1.35.5"
+
+  # Gardener Extensions (provider-agnostic)
+  calicoVersion: v1.58.0
+  gardenlinuxVersion: v0.43.0
+  ubuntuVersion: v1.40.0
+  certServiceVersion: v1.62.1
+  dnsServiceVersion: v1.85.0
+
+  # Crossplane bridge on the runtime cluster (provider-agnostic)
+  crossplaneVersion: "2.3.2"
+  providerK8sVersion: v1.2.1

@@ -1,0 +1,13 @@
+# GCP-specific version management.
+apiVersion: apiextensions.crossplane.io/v1beta1
+kind: EnvironmentConfig
+metadata:
+  name: allotment-versions-gcp
+data:
+  # Gardener GCP extension
+  providerGcpVersion: v1.52.0
+
+  # GKE runtime and CloudProfile Kubernetes versions
+  # Gardener currently supports garden/seed clusters up to Kubernetes 1.35.x.
+  gkeVersion: "1.35.5-gke.1057000"
+  gcpCloudProfilePreviousKubernetesVersion: "1.34.8"

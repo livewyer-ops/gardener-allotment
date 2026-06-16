@@ -1,0 +1,13 @@
+# AWS-specific version management.
+apiVersion: apiextensions.crossplane.io/v1beta1
+kind: EnvironmentConfig
+metadata:
+  name: allotment-versions-aws
+data:
+  # Gardener AWS extension
+  providerAwsVersion: v1.71.0
+
+  # EKS Kubernetes version (differs from GKE -- no patch version).
+  # Gardener currently supports garden/seed clusters up to Kubernetes 1.35.x.
+  eksVersion: "1.35"
+  awsCloudProfilePreviousKubernetesVersion: "1.34.8"

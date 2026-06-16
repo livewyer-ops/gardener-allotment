@@ -1,0 +1,167 @@
+# Crossplane XRDs (Composite Resource Definitions) for the Gardener lifecycle.
+#
+# XAllotment is the single root composite — users only ever create one of these.
+# Its Composition composes five child XRs below, plus the cloud ProviderConfig,
+# in strict order (enforced by composed ClusterUsages).
+#
+# Each child XRD maps to a Gardener concern with its own lifecycle:
+#   XInfra          — Runtime cluster (EKS/GKE) + networking + DNS
+#   XWorkload       — Gardener operator, secrets, cert-manager, runtime bridge
+#   XGarden         — Garden CR + Gardener Extension CRs (operator-managed)
+#   XSeed           — Gardenlet (registers the runtime cluster as a seed)
+#   XVirtualGarden  — CloudProfile, project, credentials, optional shoot
+#
+# Note: Extension CRs (operator.gardener.cloud/v1alpha1/Extension) live in
+# XGarden's composition because their lifecycle is tightly coupled with the
+# Garden CR's own deletion DAG (admission webhook + resource-manager CRD
+# dependencies). Previously XExtensions existed as a separate XR but that
+# created an irreducible cycle in the deletion ordering constraints.
+#
+# Teardown blocking comes from the client's --cascade=foreground flag: the
+# foreground cascade recurses through nested XRs via blockOwnerDeletion, so
+# kubectl delete only returns when every descendant is gone. Between-child
+# ordering is enforced by composed ClusterUsages inside XAllotment's
+# Composition (admission-webhook layer).
+---
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: xallotments.allotment.io
+spec:
+  scope: Cluster
+  group: allotment.io
+  names:
+    kind: XAllotment
+    plural: xallotments
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+---
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: xinfras.allotment.io
+spec:
+  scope: Cluster
+  group: allotment.io
+  names:
+    kind: XInfra
+    plural: xinfras
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+            status:
+              type: object
+              properties:
+                vpcId:
+                  type: string
+                oidcIssuer:
+                  type: string
+                oidcProvider:
+                  type: string
+                accountId:
+                  type: string
+                podSubnetA:
+                  type: string
+                podSubnetB:
+                  type: string
+                clusterSecurityGroup:
+                  type: string
+---
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: xworkloads.allotment.io
+spec:
+  scope: Cluster
+  group: allotment.io
+  names:
+    kind: XWorkload
+    plural: xworkloads
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+---
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: xgardens.allotment.io
+spec:
+  scope: Cluster
+  group: allotment.io
+  names:
+    kind: XGarden
+    plural: xgardens
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+---
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: xseeds.allotment.io
+spec:
+  scope: Cluster
+  group: allotment.io
+  names:
+    kind: XSeed
+    plural: xseeds
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+---
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: xvirtualgardens.allotment.io
+spec:
+  scope: Cluster
+  group: allotment.io
+  names:
+    kind: XVirtualGarden
+    plural: xvirtualgardens
+  versions:
+    - name: v1alpha1
+      served: true
+      referenceable: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object

@@ -1,0 +1,92 @@
+# VirtualGarden Composition (GCP): configures Gardener virtual garden API
+# Pipeline: load-versions -> sequence -> fetch-extra-resources -> create-provider-resources
+#           (go-templating) -> auto-ready
+# Double-nested Objects (kind -> runtime -> virtual garden) -- the only way to
+# reach the virtual API from the kind bootstrap cluster
+#
+# The composed manifests live in platform/templates/virtual.tmpl, shared
+# with the AWS composition and branched on the `provider` key from the
+# allotment-config EnvironmentConfig.
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: virtual-gcp
+  labels:
+    provider: gcp
+spec:
+  compositeTypeRef:
+    apiVersion: allotment.io/v1alpha1
+    kind: XVirtualGarden
+  mode: Pipeline
+  pipeline:
+    - step: load-versions
+      functionRef:
+        name: function-environment-configs
+      input:
+        apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+        kind: Input
+        spec:
+          environmentConfigs:
+          - type: Reference
+            ref:
+              name: allotment-versions
+          - type: Reference
+            ref:
+              name: allotment-versions-gcp
+          - type: Reference
+            ref:
+              name: allotment-config
+    # Deletion ordering only: this sequencer's creation-gating is inert (it
+    # runs before the resources are rendered); its enableDeletionSequencing
+    # generates the Usage chain that orders teardown.
+    - step: sequence
+      functionRef:
+        name: function-sequencer
+      input:
+        apiVersion: sequencer.fn.crossplane.io/v1beta1
+        kind: Input
+        rules:
+        - sequence:
+          - virtual-project
+          - virtual-(cloud-provider-secret|dns-secret|cloudprofile|credentials-.*)
+          - virtual-default-shoot
+        enableDeletionSequencing: true
+        replayDeletion: true
+
+    # Fetch bootstrap SA key + XInfra for go-templating
+    - step: fetch-extra-resources
+      functionRef:
+        name: function-extra-resources
+      input:
+        apiVersion: extra-resources.fn.crossplane.io/v1beta1
+        kind: Input
+        spec:
+          extraResources:
+            - kind: Secret
+              apiVersion: v1
+              into: sa-key
+              namespace: crossplane-system
+              type: Reference
+              ref:
+                name: gardener-sa-key
+            - kind: XInfra
+              apiVersion: allotment.io/v1alpha1
+              into: infra
+              type: Reference
+              ref:
+                name: garden-infra
+
+    # Provider resources: secrets, cloudprofile, credentials bindings,
+    # and default shoot
+    - step: create-provider-resources
+      functionRef:
+        name: function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: FileSystem
+        fileSystem:
+          dirPath: /templates
+    - step: auto-ready
+      functionRef:
+        name: function-auto-ready

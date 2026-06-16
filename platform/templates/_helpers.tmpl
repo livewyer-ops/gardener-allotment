@@ -1,0 +1,66 @@
+{{- /*
+Shared template helpers — define-only file, produces no top-level output.
+
+allotment.credentials: parses the gardener-sa-key Secret fetched by the
+fetch-extra-resources pipeline step into provider credentials. Returns a
+small YAML document — consume it with:
+  {{ $creds := include "allotment.credentials" . | fromYaml }}
+Keys (base64-encoded Secret data, empty string when absent):
+  awsAccessKey  — AWS access key ID        (Secret key accessKeyID)
+  awsSecretKey  — AWS secret access key    (Secret key secretAccessKey)
+  saKey         — GCP service-account JSON (Secret key serviceaccount.json)
+*/ -}}
+{{- define "allotment.credentials" }}
+{{- $awsAccessKey := "" }}
+{{- $awsSecretKey := "" }}
+{{- $saKey := "" }}
+{{- $erKey := "apiextensions.crossplane.io/extra-resources" }}
+{{- if hasKey .context $erKey }}
+{{-   $er := index .context $erKey }}
+{{-   if hasKey $er "sa-key" }}
+{{-     $saList := index $er "sa-key" }}
+{{-     if gt (len $saList) 0 }}
+{{-       $secret := index $saList 0 }}
+{{-       if hasKey $secret "data" }}
+{{-         $data := index $secret "data" }}
+{{-         if hasKey $data "accessKeyID" }}
+{{-           $awsAccessKey = index $data "accessKeyID" }}
+{{-         end }}
+{{-         if hasKey $data "secretAccessKey" }}
+{{-           $awsSecretKey = index $data "secretAccessKey" }}
+{{-         end }}
+{{-         if hasKey $data "serviceaccount.json" }}
+{{-           $saKey = index $data "serviceaccount.json" }}
+{{-         end }}
+{{-       end }}
+{{-     end }}
+{{-   end }}
+{{- end }}
+awsAccessKey: "{{ $awsAccessKey }}"
+awsSecretKey: "{{ $awsSecretKey }}"
+saKey: "{{ $saKey }}"
+{{- end }}
+
+{{- /*
+Readiness helpers for bootstrap provider-kubernetes Objects.
+
+allotment.nestedObjectReadiness is for double-nested resources:
+bootstrap Crossplane applies a provider-kubernetes Object into the runtime
+cluster, and runtime Crossplane applies the real resource into the virtual
+garden API. The bootstrap wrapper should follow the runtime Object's Ready
+condition instead of only observing that the runtime Object was created.
+
+allotment.existsReadiness is for resources such as ProviderConfig that have no
+Ready condition of their own but are usable as soon as the API object exists.
+*/ -}}
+{{- define "allotment.nestedObjectReadiness" }}
+readiness:
+  policy: DeriveFromCelQuery
+  celQuery: has(object.status.conditions) && object.status.conditions.exists(c, c.type == "Ready" && c.status == "True")
+{{- end }}
+
+{{- define "allotment.existsReadiness" }}
+readiness:
+  policy: DeriveFromCelQuery
+  celQuery: has(object.metadata.uid)
+{{- end }}

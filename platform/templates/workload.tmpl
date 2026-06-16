@@ -1,0 +1,115 @@
+{{- if eq .observed.composite.resource.kind "XWorkload" }}
+{{- $xrName := .observed.composite.resource.metadata.name }}
+{{- $envKey := "apiextensions.crossplane.io/environment" }}
+{{- $env := index .context $envKey }}
+{{- $provider := index $env "provider" }}
+{{- $dnsDomain := index $env "dnsDomain" }}
+{{- /* Provider-specific DNS Secret values reused below */ -}}
+{{- $dnsProviderType := "" }}
+{{- $dnsSecretName := "" }}
+{{- if eq $provider "aws" }}
+{{-   $dnsProviderType = "aws-route53" }}
+{{-   $dnsSecretName = "aws-dns" }}
+{{- else }}
+{{-   $dnsProviderType = "google-clouddns" }}
+{{-   $dnsSecretName = "gcp-dns" }}
+{{- end }}
+{{- /* Parse cloud credentials from the gardener-sa-key extra-resource (_helpers.tmpl) */ -}}
+{{- $creds := include "allotment.credentials" . | fromYaml }}
+{{- $awsAccessKey := index $creds "awsAccessKey" }}
+{{- $awsSecretKey := index $creds "awsSecretKey" }}
+{{- $saKey := index $creds "saKey" }}
+{{- $hasCreds := false }}
+{{- if eq $provider "aws" }}
+{{-   $hasCreds = and (ne $awsAccessKey "") (ne $awsSecretKey "") }}
+{{- else }}
+{{-   $hasCreds = ne $saKey "" }}
+{{- end }}
+{{- if eq $provider "aws" }}
+---
+# EKS gp2 StorageClass needs to be marked as default for etcd PVCs
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: {{ $xrName }}-default-sc
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: default-storage-class
+spec:
+  forProvider:
+    manifest:
+      apiVersion: storage.k8s.io/v1
+      kind: StorageClass
+      metadata:
+        name: gp3
+        annotations:
+          storageclass.kubernetes.io/is-default-class: "true"
+      provisioner: ebs.csi.aws.com
+      parameters:
+        type: gp3
+        encrypted: "true"
+      reclaimPolicy: Delete
+      volumeBindingMode: WaitForFirstConsumer
+      allowVolumeExpansion: true
+  providerConfigRef:
+    name: runtime
+{{- end }}
+{{- if $hasCreds }}
+---
+# Secret: {{ if eq $provider "aws" }}AWS{{ else }}GCP{{ end }} cloud provider credentials
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: {{ $xrName }}-cloud-provider
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: gardener-cloud-provider
+spec:
+  forProvider:
+    manifest:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: {{ $provider }}-cloud-provider
+        namespace: garden
+      type: Opaque
+      data:
+        {{- if eq $provider "aws" }}
+        accessKeyID: {{ $awsAccessKey }}
+        secretAccessKey: {{ $awsSecretKey }}
+        {{- else }}
+        serviceaccount.json: {{ $saKey }}
+        {{- end }}
+  providerConfigRef:
+    name: runtime
+---
+# Secret: {{ if eq $provider "aws" }}AWS{{ else }}GCP{{ end }} DNS credentials with domain annotation
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: {{ $xrName }}-{{ $provider }}-dns
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: gardener-dns-secret
+spec:
+  forProvider:
+    manifest:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: {{ $dnsSecretName }}
+        namespace: garden
+        labels:
+          gardener.cloud/role: internal-domain
+        annotations:
+          dns.gardener.cloud/provider: {{ $dnsProviderType }}
+          dns.gardener.cloud/domain: {{ $dnsDomain }}
+      type: Opaque
+      data:
+        {{- if eq $provider "aws" }}
+        accessKeyID: {{ $awsAccessKey }}
+        secretAccessKey: {{ $awsSecretKey }}
+        {{- else }}
+        serviceaccount.json: {{ $saKey }}
+        {{- end }}
+  providerConfigRef:
+    name: runtime
+{{- end }}
+{{- end }}

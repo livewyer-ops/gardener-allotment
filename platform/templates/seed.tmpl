@@ -1,0 +1,275 @@
+{{- if eq .observed.composite.resource.kind "XSeed" }}
+{{- $xrName := .observed.composite.resource.metadata.name }}
+{{- $envKey := "apiextensions.crossplane.io/environment" }}
+{{- $env := index .context $envKey }}
+{{- $provider := index $env "provider" }}
+{{- $region := index $env "region" }}
+{{- $zones := index $env "zones" }}
+{{- $dnsDomain := index $env "dnsDomain" }}
+{{- /* Provider-specific seedConfig values reused below */ -}}
+{{- $dnsProviderType := "" }}
+{{- $dnsSecretName := "" }}
+{{- if eq $provider "aws" }}
+{{-   $dnsProviderType = "aws-route53" }}
+{{-   $dnsSecretName = "aws-dns" }}
+{{- else }}
+{{-   $dnsProviderType = "google-clouddns" }}
+{{-   $dnsSecretName = "gcp-dns" }}
+{{- end }}
+---
+# Gardenlet: registers runtime cluster as Gardener seed — {{ if eq $provider "aws" }}AWS{{ else }}GCP{{ end }} provider config
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: {{ $xrName }}-gardenlet
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: seed-gardenlet
+spec:
+{{ include "allotment.nestedObjectReadiness" . | nindent 2 }}
+  forProvider:
+    manifest:
+      apiVersion: kubernetes.crossplane.io/v1alpha2
+      kind: Object
+      metadata:
+        name: gardenlet-allotment
+      spec:
+        forProvider:
+          manifest:
+            apiVersion: seedmanagement.gardener.cloud/v1alpha1
+            kind: Gardenlet
+            metadata:
+              name: allotment
+              namespace: garden
+            spec:
+              deployment:
+                helm:
+                  ociRepository:
+                    ref: "europe-docker.pkg.dev/gardener-project/releases/charts/gardener/gardenlet:{{ index $env "gardenletVersion" }}"
+                replicaCount: 1
+                revisionHistoryLimit: 2
+                resources:
+                  requests:
+                    cpu: 250m
+                    memory: 512Mi
+                  limits:
+                    cpu: "1"
+                    memory: 1Gi
+              config:
+                apiVersion: gardenlet.config.gardener.cloud/v1alpha1
+                kind: GardenletConfiguration
+                # Disable the seed logging stack (fluent-operator/Vali). In Allotment
+                # the garden and seed are colocated on one cluster, so the provider
+                # extension is installed twice; with seed logging on, both copies
+                # deploy the same cluster-scoped fluent ClusterFilters, and teardown
+                # non-deterministically deadlocks on whichever copy owns them last.
+                # Logging is not needed for an evaluation sandbox.
+                logging:
+                  enabled: false
+                controllers:
+                  shoot:
+                    concurrentSyncs: 1
+                    syncPeriod: 1h
+                    retryDuration: 24h
+                    reconcileInMaintenanceOnly: true
+                    respectSyncPeriodOverwrite: true
+                  shootState:
+                    concurrentSyncs: 0
+                seedConfig:
+                  apiVersion: core.gardener.cloud/v1beta1
+                  kind: Seed
+                  spec:
+                    provider:
+                      type: {{ $provider }}
+                      region: {{ $region }}
+                      zones:
+{{ range $zones }}
+                        - {{ . }}
+{{ end }}
+                    dns:
+                      provider:
+                        type: {{ $dnsProviderType }}
+                        credentialsRef:
+                          apiVersion: v1
+                          kind: Secret
+                          name: {{ $dnsSecretName }}
+                          namespace: garden
+                      internal:
+                        type: {{ $dnsProviderType }}
+                        credentialsRef:
+                          apiVersion: v1
+                          kind: Secret
+                          name: {{ $dnsSecretName }}
+                          namespace: garden
+                        domain: internal.{{ $dnsDomain }}
+                    ingress:
+                      domain: seed.{{ $dnsDomain }}
+                      controller:
+                        kind: nginx
+                    networks:
+                      ipFamilies:
+                        - IPv4
+                      {{- if eq $provider "aws" }}
+                      nodes: 10.0.0.0/16
+                      pods: 100.64.0.0/16
+                      services: 172.20.0.0/16
+                      {{- else }}
+                      nodes: 10.128.0.0/9
+                      pods: 10.2.0.0/16
+                      services: 10.3.0.0/20
+                      {{- end }}
+                      shootDefaults:
+                        pods: 192.168.128.0/18
+                        services: 192.168.192.0/18
+                    settings:
+                      {{- if eq $provider "aws" }}
+                      loadBalancerServices:
+                        annotations:
+                          service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+                      {{- end }}
+                      excessCapacityReservation:
+                        enabled: false
+                      dependencyWatchdog:
+                        weeder:
+                          enabled: true
+                        prober:
+                          enabled: true
+                      scheduling:
+                        visible: true
+                      verticalPodAutoscaler:
+                        enabled: true
+                      topologyAwareRouting:
+                        enabled: false
+        providerConfigRef:
+          name: virtual
+  providerConfigRef:
+    name: runtime
+---
+# Seed CR delete-hook: observes the cluster-scoped Seed CR that
+# gardener-operator creates from the Gardenlet's seedConfig. On XSeed
+# teardown, the internal sequencer deletes THIS Object first, which
+# (via managementPolicies=Delete) issues the delete on the Seed CR.
+# Gardenlet then drains seed-class ManagedResources before itself
+# deregistering, so Garden's deletion DAG ("Ensuring no
+# ManagedResources exist anymore" task) can complete cleanly.
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: {{ $xrName }}-seed-cr
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: seed-cr
+spec:
+{{ include "allotment.nestedObjectReadiness" . | nindent 2 }}
+  forProvider:
+    manifest:
+      apiVersion: kubernetes.crossplane.io/v1alpha2
+      kind: Object
+      metadata:
+        name: seed-cr-allotment
+      spec:
+        managementPolicies: ["Observe", "Delete"]
+        deletionPolicy: Delete
+        forProvider:
+          manifest:
+            apiVersion: core.gardener.cloud/v1beta1
+            kind: Seed
+            metadata:
+              name: allotment
+              annotations:
+                confirmation.gardener.cloud/deletion: 'true'
+        providerConfigRef:
+          name: virtual
+  providerConfigRef:
+    name: runtime
+---
+# Seed registration permit: marker ConfigMap consumed by the
+# seed-registration-permit ValidatingAdmissionPolicyBinding composed
+# in XGarden (parameterNotFoundAction: Deny). While this ConfigMap
+# exists, gardenlet may CREATE its Seed (install, restarts). On
+# XSeed teardown it is deleted in parallel with the rest (~1s,
+# long before the Seed drain finishes), after which any restarted
+# gardenlet is denied re-registration — closing the race where a
+# liveness-probe restart re-created the Seed within ~2s of its
+# deletion and orphaned seed-class ManagedResources that block
+# Garden's deletion DAG. gardenlet's mid-drain PATCHes are never
+# matched by the policy, so the drain itself is unaffected.
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: {{ $xrName }}-registration-permit
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: seed-registration-permit
+spec:
+{{ include "allotment.nestedObjectReadiness" . | nindent 2 }}
+  forProvider:
+    manifest:
+      apiVersion: kubernetes.crossplane.io/v1alpha2
+      kind: Object
+      metadata:
+        name: seed-registration-permit
+      spec:
+        forProvider:
+          manifest:
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+              name: allow-seed-registration
+              namespace: garden
+            data:
+              purpose: "seed registration permit — deletion revokes gardenlet's ability to CREATE its Seed"
+        providerConfigRef:
+          name: virtual
+  providerConfigRef:
+    name: runtime
+---
+# Gardenlet Deployment delete-hook: per Gardener operator docs,
+# "gardenlets must always be deleted manually (by deleting the Seed
+# and, once gone, then the gardenlet Deployment)" — deleting the
+# Gardenlet CR alone leaves the Deployment running, and a running
+# gardenlet RE-REGISTERS its Seed after drain, recreating seed-class
+# ManagedResources that permanently block Garden's deletion DAG.
+# This hook observes the Deployment (created by the Gardenlet CR
+# machinery) and deletes it on teardown; the ClusterUsage below
+# orders it strictly after the Seed CR drain has completed.
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: {{ $xrName }}-gardenlet-deploy
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: gardenlet-deploy-hook
+spec:
+  managementPolicies: ["Observe", "Delete"]
+  deletionPolicy: Delete
+  forProvider:
+    manifest:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: gardenlet
+        namespace: garden
+  providerConfigRef:
+    name: runtime
+---
+# Deletion order inside XSeed: seed-cr (drain) must be fully gone
+# before the gardenlet Deployment is removed — gardenlet executes
+# the drain. replayDeletion re-issues the blocked delete the moment
+# the Seed CR finishes.
+apiVersion: protection.crossplane.io/v1beta1
+kind: ClusterUsage
+metadata:
+  name: gardenlet-deploy-used-by-seed-cr
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: usage-gardenlet-deploy-seed-cr
+    gotemplating.fn.crossplane.io/ready: "True"
+spec:
+  of:
+    apiVersion: kubernetes.crossplane.io/v1alpha2
+    kind: Object
+    resourceRef:
+      name: {{ $xrName }}-gardenlet-deploy
+  by:
+    apiVersion: kubernetes.crossplane.io/v1alpha2
+    kind: Object
+    resourceRef:
+      name: {{ $xrName }}-seed-cr
+  replayDeletion: true
+{{- end }}

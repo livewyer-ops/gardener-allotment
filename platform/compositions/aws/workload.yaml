@@ -1,0 +1,315 @@
+# XWorkload (AWS): Gardener's runtime control plane and credential secrets.
+#
+# Deploys onto the runtime cluster (XInfra):
+#   - gardener-operator: the Helm chart that manages the Garden lifecycle
+#   - cert-manager: TLS certificate management (required by Gardener)
+#   - Cloud provider + DNS secrets (AWS credentials for Gardener to manage shoots)
+#   - Runtime bridge: a second Crossplane instance on the runtime cluster with
+#     provider-kubernetes targeting the virtual garden API. This bridge lets the
+#     kind cluster reach the virtual API via double-nested Objects.
+#
+# Extension CRs live inside XGarden's composition. ClusterUsages ensure
+# XWorkload outlives XGarden (and its composed Extensions) during teardown,
+# keeping the operator and credentials alive while Gardener finalizers resolve.
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: workload-aws
+  labels:
+    provider: aws
+spec:
+  compositeTypeRef:
+    apiVersion: allotment.io/v1alpha1
+    kind: XWorkload
+  mode: Pipeline
+  pipeline:
+  - step: load-versions
+    functionRef:
+      name: function-environment-configs
+    input:
+      apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+      kind: Input
+      spec:
+        environmentConfigs:
+        - type: Reference
+          ref:
+            name: allotment-versions
+        - type: Reference
+          ref:
+            name: allotment-versions-aws
+        - type: Reference
+          ref:
+            name: allotment-config
+  # No sequencer: creation converges (each resource retries until its
+  # dependencies exist) and the only deletion orderings that matter are the
+  # two hand-authored ClusterUsages below — providerconfig-virtual deletes
+  # before provider-k8s, which deletes before the crossplane bridge Release.
+  # Everything else (namespace, releases, RBAC) finalizes independently.
+  # Fetch bootstrap SA key — needed by go-templating to create secrets
+  # with dotted key names (serviceaccount.json) that P&T can't handle
+  - step: fetch-sa-key
+    functionRef:
+      name: function-extra-resources
+    input:
+      apiVersion: extra-resources.fn.crossplane.io/v1beta1
+      kind: Input
+      spec:
+        extraResources:
+        - kind: Secret
+          apiVersion: v1
+          into: sa-key
+          namespace: crossplane-system
+          type: Reference
+          ref:
+            name: gardener-sa-key
+  # Provider resources (default StorageClass on AWS, credential secrets) —
+  # rendered from platform/templates/workload.tmpl, shared with the GCP
+  # composition and branched on the `provider` key from the allotment-config
+  # EnvironmentConfig.
+  - step: create-provider-resources
+    functionRef:
+      name: function-go-templating
+    input:
+      apiVersion: gotemplating.fn.crossplane.io/v1beta1
+      kind: GoTemplate
+      source: FileSystem
+      fileSystem:
+        dirPath: /templates
+  - step: patch-and-transform
+    functionRef:
+      name: function-patch-and-transform
+    input:
+      apiVersion: pt.fn.crossplane.io/v1beta1
+      kind: Resources
+      resources:
+      # ServiceAccount + token on runtime cluster for kubeconfig extraction
+      # cluster-admin scope is intentional for evaluation — users need full access
+      # Avoids gcloud dependency — token is readable from Object status on kind
+      - name: runtime-admin-sa
+        base:
+          apiVersion: kubernetes.crossplane.io/v1alpha2
+          kind: Object
+          metadata:
+            name: runtime-admin-sa
+          spec:
+            forProvider:
+              manifest:
+                apiVersion: v1
+                kind: ServiceAccount
+                metadata:
+                  name: allotment-admin
+                  namespace: kube-system
+            providerConfigRef:
+              name: runtime
+      - name: runtime-admin-crb
+        base:
+          apiVersion: kubernetes.crossplane.io/v1alpha2
+          kind: Object
+          metadata:
+            name: runtime-admin-crb
+          spec:
+            forProvider:
+              manifest:
+                apiVersion: rbac.authorization.k8s.io/v1
+                kind: ClusterRoleBinding
+                metadata:
+                  name: allotment-admin
+                roleRef:
+                  apiGroup: rbac.authorization.k8s.io
+                  kind: ClusterRole
+                  name: cluster-admin
+                subjects:
+                - kind: ServiceAccount
+                  name: allotment-admin
+                  namespace: kube-system
+            providerConfigRef:
+              name: runtime
+      - name: runtime-admin-token
+        base:
+          apiVersion: kubernetes.crossplane.io/v1alpha2
+          kind: Object
+          metadata:
+            name: runtime-admin-token
+          spec:
+            forProvider:
+              manifest:
+                apiVersion: v1
+                kind: Secret
+                metadata:
+                  name: allotment-admin-token
+                  namespace: kube-system
+                  annotations:
+                    kubernetes.io/service-account.name: allotment-admin
+                type: kubernetes.io/service-account-token
+            providerConfigRef:
+              name: runtime
+      # Namespace must exist before operator Helm chart and secrets are applied
+      - name: ns-garden
+        base:
+          apiVersion: kubernetes.crossplane.io/v1alpha2
+          kind: Object
+          metadata:
+            name: ns-garden
+          spec:
+            forProvider:
+              manifest:
+                apiVersion: v1
+                kind: Namespace
+                metadata:
+                  name: garden
+            providerConfigRef:
+              name: runtime
+      # cert-manager must be pre-installed — Gardener operator expects it on the runtime cluster
+      - name: cert-manager
+        base:
+          apiVersion: helm.crossplane.io/v1beta1
+          kind: Release
+          metadata:
+            name: cert-manager
+          spec:
+            forProvider:
+              chart:
+                name: cert-manager
+                repository: https://charts.jetstack.io
+                version: v1.20.2
+              namespace: cert-manager
+              values:
+                crds:
+                  enabled: true
+            providerConfigRef:
+              name: runtime
+        patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: certManagerVersion
+          toFieldPath: spec.forProvider.chart.version
+      - name: gardener-operator
+        base:
+          apiVersion: helm.crossplane.io/v1beta1
+          kind: Release
+          metadata:
+            name: gardener-operator
+          spec:
+            forProvider:
+              chart:
+                name: operator
+                repository: oci://europe-docker.pkg.dev/gardener-project/releases/charts/gardener
+                version: v1.144.1
+              namespace: garden
+              values:
+                # Pin Dashboard to v1.82.5 — last version without websocketAllowedOrigins
+                # origin check (introduced in v1.83.0). Allows port-forward access.
+                imageVectorOverwrite: |
+                  images:
+                  - name: gardener-dashboard
+                    repository: europe-docker.pkg.dev/gardener-project/releases/gardener/dashboard
+                    tag: "1.82.5"
+            providerConfigRef:
+              name: runtime
+        patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: gardenerVersion
+          toFieldPath: spec.forProvider.chart.version
+      # Nested Crossplane bridge on the runtime cluster.
+      # It must outlive XVirtualGarden so virtual resources can finish deleting
+      # before XWorkload tears down the runtime bridge.
+      - name: runtime-crossplane
+        base:
+          apiVersion: helm.crossplane.io/v1beta1
+          kind: Release
+          metadata:
+            name: crossplane
+          spec:
+            forProvider:
+              chart:
+                name: crossplane
+                repository: https://charts.crossplane.io/stable
+                version: "2.3.2"
+              namespace: crossplane-system
+              values: {}
+            providerConfigRef:
+              name: runtime
+        patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: crossplaneVersion
+          toFieldPath: spec.forProvider.chart.version
+      - name: runtime-provider-k8s
+        base:
+          apiVersion: kubernetes.crossplane.io/v1alpha2
+          kind: Object
+          metadata:
+            name: runtime-provider-kubernetes
+          spec:
+            forProvider:
+              manifest:
+                apiVersion: pkg.crossplane.io/v1
+                kind: Provider
+                metadata:
+                  name: crossplane-contrib-provider-kubernetes
+                spec:
+                  package: xpkg.upbound.io/crossplane-contrib/provider-kubernetes:v1.2.1
+            providerConfigRef:
+              name: runtime
+      - name: runtime-providerconfig-virtual
+        base:
+          apiVersion: kubernetes.crossplane.io/v1alpha2
+          kind: Object
+          metadata:
+            name: runtime-providerconfig-virtual
+          spec:
+            readiness:
+              policy: DeriveFromCelQuery
+              celQuery: has(object.metadata.uid)
+            forProvider:
+              manifest:
+                apiVersion: kubernetes.crossplane.io/v1alpha1
+                kind: ProviderConfig
+                metadata:
+                  name: virtual
+                spec:
+                  credentials:
+                    source: Secret
+                    secretRef:
+                      name: gardener
+                      namespace: garden
+                      key: kubeconfig
+            providerConfigRef:
+              name: runtime
+      - name: runtime-provider-k8s-uses-runtime-crossplane
+        readinessChecks:
+        - type: None
+        base:
+          apiVersion: protection.crossplane.io/v1beta1
+          kind: ClusterUsage
+          spec:
+            replayDeletion: true
+            by:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              resourceRef:
+                name: runtime-provider-kubernetes
+            of:
+              apiVersion: helm.crossplane.io/v1beta1
+              kind: Release
+              resourceRef:
+                name: crossplane
+      - name: runtime-providerconfig-virtual-uses-runtime-provider-k8s
+        readinessChecks:
+        - type: None
+        base:
+          apiVersion: protection.crossplane.io/v1beta1
+          kind: ClusterUsage
+          spec:
+            replayDeletion: true
+            by:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              resourceRef:
+                name: runtime-providerconfig-virtual
+            of:
+              apiVersion: kubernetes.crossplane.io/v1alpha2
+              kind: Object
+              resourceRef:
+                name: runtime-provider-kubernetes
+  - step: auto-ready
+    functionRef:
+      name: function-auto-ready

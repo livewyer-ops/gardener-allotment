@@ -1,0 +1,57 @@
+# XAllotment (GCP): root composite — the only XR users create directly.
+#
+# Composes the GCP cloud ProviderConfig plus the five child XRs (XInfra,
+# XWorkload, XGarden, XSeed, XVirtualGarden). Child XRs are
+# owned by XAllotment via ownerReferences, so `kubectl delete xallotment/…
+# --cascade=foreground` cascades cleanly through every level.
+#
+# Creation converges naturally: all children are created together and each
+# retries until its dependencies are ready. Deletion ordering is enforced by
+# the composed ClusterUsages (admission-webhook layer), releasing
+# virtual → seed → garden → workload → infra → cloud-providerconfig.
+#
+# The projectID on the cloud ProviderConfig is patched from the
+# `allotment-config` EnvironmentConfig — no sed-at-apply-time required.
+#
+# The composed manifests (ProviderConfig, child XRs, ClusterUsages) live in
+# platform/templates/allotment.tmpl, shared with the AWS composition and
+# branched on the `provider` key from the allotment-config EnvironmentConfig.
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: allotment-gcp
+  labels:
+    provider: gcp
+spec:
+  compositeTypeRef:
+    apiVersion: allotment.io/v1alpha1
+    kind: XAllotment
+  mode: Pipeline
+  pipeline:
+    # envconfig needed by the shared template for provider dispatch
+    # (and projectId on GCP)
+    - step: load-envconfigs
+      functionRef:
+        name: function-environment-configs
+      input:
+        apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+        kind: Input
+        spec:
+          environmentConfigs:
+          - type: Reference
+            ref:
+              name: allotment-config
+
+    - step: compose-children
+      functionRef:
+        name: function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: FileSystem
+        fileSystem:
+          dirPath: /templates
+
+    - step: auto-ready
+      functionRef:
+        name: function-auto-ready

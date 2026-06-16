@@ -1,0 +1,72 @@
+# XSeed (GCP): Registers the runtime cluster as a Gardener "seed."
+#
+# Two composed resources, in sequence:
+#   1. seed-gardenlet — Gardenlet CR (seedmanagement.gardener.cloud/v1alpha1)
+#      on virtual garden API. Operator deploys gardenlet and derives the Seed
+#      CR from seedConfig. (Installed FIRST, deleted LAST.)
+#   2. seed-cr — observes the derived cluster-scoped Seed CR so we can trigger
+#      its deletion cleanly on teardown. managementPolicies: ["Observe","Delete"]
+#      means we don't create/update the Seed (operator does that from Gardenlet
+#      seedConfig) but we DO issue the delete on teardown, which triggers
+#      gardenlet's drain flow (cleans up seed-class ManagedResources before
+#      deregistering). Per Gardener operator docs: "On Gardenlet deletion,
+#      nothing happens: gardenlets must always be deleted manually by deleting
+#      the Seed and, once gone, then the gardenlet Deployment."
+#      (Installed SECOND after Seed CR appears, deleted FIRST.)
+#
+# The composed manifests (Gardenlet, Seed delete-hook, registration permit,
+# gardenlet-deploy hook, ClusterUsage) live in platform/templates/seed.tmpl,
+# shared with the AWS composition and branched on the `provider` key from
+# the allotment-config EnvironmentConfig.
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: seed-gcp
+  labels:
+    provider: gcp
+spec:
+  compositeTypeRef:
+    apiVersion: allotment.io/v1alpha1
+    kind: XSeed
+  mode: Pipeline
+  pipeline:
+    - step: load-versions
+      functionRef:
+        name: function-environment-configs
+      input:
+        apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+        kind: Input
+        spec:
+          environmentConfigs:
+          - type: Reference
+            ref:
+              name: allotment-versions
+          - type: Reference
+            ref:
+              name: allotment-versions-gcp
+          - type: Reference
+            ref:
+              name: allotment-config
+
+    - step: create-gardenlet
+      functionRef:
+        name: function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: FileSystem
+        fileSystem:
+          dirPath: /templates
+
+    # No sequencer inside XSeed: seed-gardenlet and seed-cr are applied in
+    # parallel. Install: seed-cr Object observes (with managementPolicies
+    # Observe+Delete) and waits for Gardenlet-operator to create the Seed CR;
+    # gardenlet-deploy-hook observes the Deployment once it appears.
+    # Delete: deleting the Gardenlet CR is a no-op per operator docs; deleting
+    # the Seed CR drives gardenlet's drain flow; the ClusterUsage holds the
+    # gardenlet Deployment until the drain completes, then it is removed so
+    # the gardenlet cannot re-register the Seed.
+
+    - step: auto-ready
+      functionRef:
+        name: function-auto-ready

@@ -1,0 +1,1078 @@
+# XInfra (AWS): The "runtime cluster" — the Kubernetes cluster that hosts Gardener.
+#
+# Gardener runs on a dedicated cluster (the "runtime" or "seed" cluster), not on
+# the kind bootstrap cluster. This composition provisions that cluster on AWS:
+#   - EKS cluster with managed node group
+#   - VPC with public/private subnets, NAT gateway, and internet gateway
+#   - Private Route53 hosted zone for Gardener's internal DNS
+#   - IAM roles for EKS, nodes, and EBS CSI driver (IRSA)
+#   - VPC CNI custom networking (pods on secondary CIDR 100.64.0.0/16)
+#   - Tertiary CIDR 10.250.0.0/16 for Gardener shoot worker subnets
+#     (shoots share the seed VPC so they can resolve the private DNS zone)
+#   - ProviderConfigs (helm + kubernetes) targeting the runtime cluster
+#
+# Deleted last during teardown — everything else depends on this cluster.
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: infra-aws
+  labels:
+    provider: aws
+spec:
+  compositeTypeRef:
+    apiVersion: allotment.io/v1alpha1
+    kind: XInfra
+  mode: Pipeline
+  pipeline:
+  - step: load-versions
+    functionRef:
+      name: function-environment-configs
+    input:
+      apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+      kind: Input
+      spec:
+        environmentConfigs:
+        - type: Reference
+          ref:
+            name: allotment-versions
+        - type: Reference
+          ref:
+            name: allotment-versions-aws
+        - type: Reference
+          ref:
+            name: allotment-config
+  - step: render-zone-resources
+    functionRef:
+      name: function-go-templating
+    input:
+      apiVersion: gotemplating.fn.crossplane.io/v1beta1
+      kind: GoTemplate
+      source: FileSystem
+      fileSystem:
+        dirPath: /templates
+  - step: patch-and-transform
+    functionRef:
+      name: function-patch-and-transform
+    input:
+      apiVersion: pt.fn.crossplane.io/v1beta1
+      kind: Resources
+      patchSets:
+      - name: aws-common-tags
+        patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: clusterName
+          toFieldPath: spec.forProvider.tags["allotment.cluster"]
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: provider
+          toFieldPath: spec.forProvider.tags["allotment.provider"]
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: createdBy
+          toFieldPath: spec.forProvider.tags["allotment.created-by"]
+          policy:
+            fromFieldPath: Optional
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: expiresAt
+          toFieldPath: spec.forProvider.tags["allotment.expires-at"]
+          policy:
+            fromFieldPath: Optional
+      resources:
+      # ──────────────────────────────────────────────────
+      # 1. VPC
+      # ──────────────────────────────────────────────────
+      - name: vpc
+        base:
+          apiVersion: ec2.aws.upbound.io/v1beta1
+          kind: VPC
+          spec:
+            forProvider:
+              cidrBlock: 10.0.0.0/16
+              enableDnsSupport: true
+              enableDnsHostnames: true
+              tags:
+                Name: REPLACE
+            providerConfigRef:
+              name: default
+        patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: region
+          toFieldPath: spec.forProvider.region
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-vpc'
+          toFieldPath: metadata.name
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-vpc'
+          toFieldPath: spec.forProvider.tags["Name"]
+        - type: PatchSet
+          patchSetName: aws-common-tags
+        - type: ToCompositeFieldPath
+          fromFieldPath: status.atProvider.id
+          toFieldPath: status.vpcId
+          policy:
+            fromFieldPath: Optional
+
+      # ──────────────────────────────────────────────────
+      # 2b. VPC Secondary CIDR (100.64.0.0/16 for pod networking)
+      # ──────────────────────────────────────────────────
+      - name: vpc-secondary-cidr
+        base:
+          apiVersion: ec2.aws.upbound.io/v1beta1
+          kind: VPCIPv4CidrBlockAssociation
+          spec:
+            forProvider:
+              cidrBlock: 100.64.0.0/16
+              vpcIdSelector:
+                matchControllerRef: true
+            providerConfigRef:
+              name: default
+        patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: region
+          toFieldPath: spec.forProvider.region
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-secondary-cidr'
+          toFieldPath: metadata.name
+
+      # ──────────────────────────────────────────────────
+      # 2c. VPC Shoot CIDR (10.250.0.0/16 for Gardener shoot workers)
+      # Mirrors GCP pattern: shoots share seed VPC with dedicated worker range.
+      # Must be in 10.0.0.0/8 (same RFC 1918 class as primary 10.0.0.0/16).
+      # Keeps shoot nodes (10.250.x) disjoint from seed nodes (10.0.x),
+      # avoiding VPN double-NAT and enabling private Route53 DNS visibility.
+      # ──────────────────────────────────────────────────
+      - name: vpc-shoot-cidr
+        base:
+          apiVersion: ec2.aws.upbound.io/v1beta1
+          kind: VPCIPv4CidrBlockAssociation
+          spec:
+            forProvider:
+              cidrBlock: 10.250.0.0/16
+              vpcIdSelector:
+                matchControllerRef: true
+            providerConfigRef:
+              name: default
+        patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: region
+          toFieldPath: spec.forProvider.region
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-shoot-cidr'
+          toFieldPath: metadata.name
+
+      # ──────────────────────────────────────────────────
+      # 7. Internet Gateway
+      # ──────────────────────────────────────────────────
+      - name: igw
+        base:
+          apiVersion: ec2.aws.upbound.io/v1beta1
+          kind: InternetGateway
+          spec:
+            forProvider:
+              vpcIdSelector:
+                matchControllerRef: true
+              tags:
+                Name: REPLACE
+            providerConfigRef:
+              name: default
+        patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: region
+          toFieldPath: spec.forProvider.region
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-igw'
+          toFieldPath: metadata.name
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-igw'
+          toFieldPath: spec.forProvider.tags["Name"]
+        - type: PatchSet
+          patchSetName: aws-common-tags
+
+      # ──────────────────────────────────────────────────
+      # 8. Elastic IP for NAT Gateway
+      # ──────────────────────────────────────────────────
+      - name: eip
+        base:
+          apiVersion: ec2.aws.upbound.io/v1beta1
+          kind: EIP
+          spec:
+            forProvider:
+              domain: vpc
+              tags:
+                Name: REPLACE
+            providerConfigRef:
+              name: default
+        patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: region
+          toFieldPath: spec.forProvider.region
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-nat-eip'
+          toFieldPath: metadata.name
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-nat-eip'
+          toFieldPath: spec.forProvider.tags["Name"]
+        - type: PatchSet
+          patchSetName: aws-common-tags
+
+      # ──────────────────────────────────────────────────
+      # 9. NAT Gateway (in public subnet A)
+      # ──────────────────────────────────────────────────
+      - name: natgw
+        base:
+          apiVersion: ec2.aws.upbound.io/v1beta1
+          kind: NATGateway
+          spec:
+            forProvider:
+              connectivityType: public
+              allocationIdSelector:
+                matchControllerRef: true
+              subnetIdSelector:
+                matchControllerRef: true
+                matchLabels:
+                  access: public
+                  zone: a
+              tags:
+                Name: REPLACE
+            providerConfigRef:
+              name: default
+        patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: region
+          toFieldPath: spec.forProvider.region
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-natgw'
+          toFieldPath: metadata.name
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-natgw'
+          toFieldPath: spec.forProvider.tags["Name"]
+        - type: PatchSet
+          patchSetName: aws-common-tags
+
+      # ──────────────────────────────────────────────────
+      # 10. Public Route Table
+      # ──────────────────────────────────────────────────
+      - name: rt-public
+        base:
+          apiVersion: ec2.aws.upbound.io/v1beta1
+          kind: RouteTable
+          metadata:
+            labels:
+              route: public
+          spec:
+            forProvider:
+              vpcIdSelector:
+                matchControllerRef: true
+              tags:
+                Name: REPLACE
+            providerConfigRef:
+              name: default
+        patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: region
+          toFieldPath: spec.forProvider.region
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-rt-public'
+          toFieldPath: metadata.name
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-rt-public'
+          toFieldPath: spec.forProvider.tags["Name"]
+        - type: PatchSet
+          patchSetName: aws-common-tags
+
+      # ──────────────────────────────────────────────────
+      # 11. Public Default Route (via Internet Gateway)
+      # ──────────────────────────────────────────────────
+      - name: route-public
+        base:
+          apiVersion: ec2.aws.upbound.io/v1beta1
+          kind: Route
+          spec:
+            forProvider:
+              destinationCidrBlock: 0.0.0.0/0
+              gatewayIdSelector:
+                matchControllerRef: true
+              routeTableIdSelector:
+                matchControllerRef: true
+                matchLabels:
+                  route: public
+            providerConfigRef:
+              name: default
+        patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: region
+          toFieldPath: spec.forProvider.region
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-route-public'
+          toFieldPath: metadata.name
+
+      # ──────────────────────────────────────────────────
+      # 12. Private Route Table
+      # ──────────────────────────────────────────────────
+      - name: rt-private
+        base:
+          apiVersion: ec2.aws.upbound.io/v1beta1
+          kind: RouteTable
+          metadata:
+            labels:
+              route: private
+          spec:
+            forProvider:
+              vpcIdSelector:
+                matchControllerRef: true
+              tags:
+                Name: REPLACE
+            providerConfigRef:
+              name: default
+        patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: region
+          toFieldPath: spec.forProvider.region
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-rt-private'
+          toFieldPath: metadata.name
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-rt-private'
+          toFieldPath: spec.forProvider.tags["Name"]
+        - type: PatchSet
+          patchSetName: aws-common-tags
+
+      # ──────────────────────────────────────────────────
+      # 13. Private Default Route (via NAT Gateway)
+      # ──────────────────────────────────────────────────
+      - name: route-private
+        base:
+          apiVersion: ec2.aws.upbound.io/v1beta1
+          kind: Route
+          spec:
+            forProvider:
+              destinationCidrBlock: 0.0.0.0/0
+              natGatewayIdSelector:
+                matchControllerRef: true
+              routeTableIdSelector:
+                matchControllerRef: true
+                matchLabels:
+                  route: private
+            providerConfigRef:
+              name: default
+        patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: region
+          toFieldPath: spec.forProvider.region
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-route-private'
+          toFieldPath: metadata.name
+
+      # ──────────────────────────────────────────────────
+      # 18. IAM Role: EKS Cluster
+      # ──────────────────────────────────────────────────
+      - name: eks-cluster-role
+        base:
+          apiVersion: iam.aws.upbound.io/v1beta1
+          kind: Role
+          metadata:
+            labels:
+              role: eks-cluster
+          spec:
+            forProvider:
+              assumeRolePolicy: |
+                {
+                  "Version": "2012-10-17",
+                  "Statement": [
+                    {
+                      "Effect": "Allow",
+                      "Principal": {
+                        "Service": "eks.amazonaws.com"
+                      },
+                      "Action": "sts:AssumeRole"
+                    }
+                  ]
+                }
+              tags:
+                Name: REPLACE
+            providerConfigRef:
+              name: default
+        patches:
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-eks-cluster'
+          toFieldPath: metadata.name
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-eks-cluster'
+          toFieldPath: spec.forProvider.tags["Name"]
+        - type: PatchSet
+          patchSetName: aws-common-tags
+
+      # ──────────────────────────────────────────────────
+      # 19. EKS Cluster Policy Attachment
+      # ──────────────────────────────────────────────────
+      - name: eks-cluster-policy
+        base:
+          apiVersion: iam.aws.upbound.io/v1beta1
+          kind: RolePolicyAttachment
+          spec:
+            forProvider:
+              policyArn: arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+              roleSelector:
+                matchControllerRef: true
+                matchLabels:
+                  role: eks-cluster
+            providerConfigRef:
+              name: default
+        patches:
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-eks-cluster-policy'
+          toFieldPath: metadata.name
+
+      # ──────────────────────────────────────────────────
+      # 20. IAM Role: EKS Node Group
+      # ──────────────────────────────────────────────────
+      - name: eks-node-role
+        base:
+          apiVersion: iam.aws.upbound.io/v1beta1
+          kind: Role
+          metadata:
+            labels:
+              role: eks-node
+          spec:
+            forProvider:
+              assumeRolePolicy: |
+                {
+                  "Version": "2012-10-17",
+                  "Statement": [
+                    {
+                      "Effect": "Allow",
+                      "Principal": {
+                        "Service": "ec2.amazonaws.com"
+                      },
+                      "Action": "sts:AssumeRole"
+                    }
+                  ]
+                }
+              tags:
+                Name: REPLACE
+            providerConfigRef:
+              name: default
+        patches:
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-eks-node'
+          toFieldPath: metadata.name
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-eks-node'
+          toFieldPath: spec.forProvider.tags["Name"]
+        - type: PatchSet
+          patchSetName: aws-common-tags
+
+      # ──────────────────────────────────────────────────
+      # 21. Node Policy: AmazonEKSWorkerNodePolicy
+      # ──────────────────────────────────────────────────
+      - name: eks-node-policy
+        base:
+          apiVersion: iam.aws.upbound.io/v1beta1
+          kind: RolePolicyAttachment
+          spec:
+            forProvider:
+              policyArn: arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+              roleSelector:
+                matchControllerRef: true
+                matchLabels:
+                  role: eks-node
+            providerConfigRef:
+              name: default
+        patches:
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-eks-node-policy'
+          toFieldPath: metadata.name
+
+      # ──────────────────────────────────────────────────
+      # 22. Node Policy: AmazonEKS_CNI_Policy
+      # ──────────────────────────────────────────────────
+      - name: eks-cni-policy
+        base:
+          apiVersion: iam.aws.upbound.io/v1beta1
+          kind: RolePolicyAttachment
+          spec:
+            forProvider:
+              policyArn: arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+              roleSelector:
+                matchControllerRef: true
+                matchLabels:
+                  role: eks-node
+            providerConfigRef:
+              name: default
+        patches:
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-eks-cni-policy'
+          toFieldPath: metadata.name
+
+      # ──────────────────────────────────────────────────
+      # 23. Node Policy: AmazonEC2ContainerRegistryReadOnly
+      # ──────────────────────────────────────────────────
+      - name: eks-ecr-policy
+        base:
+          apiVersion: iam.aws.upbound.io/v1beta1
+          kind: RolePolicyAttachment
+          spec:
+            forProvider:
+              policyArn: arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+              roleSelector:
+                matchControllerRef: true
+                matchLabels:
+                  role: eks-node
+            providerConfigRef:
+              name: default
+        patches:
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-eks-ecr-policy'
+          toFieldPath: metadata.name
+
+      # ──────────────────────────────────────────────────
+      # 24. EKS Cluster
+      # ──────────────────────────────────────────────────
+      - name: eks-cluster
+        base:
+          apiVersion: eks.aws.upbound.io/v1beta2
+          kind: Cluster
+          spec:
+            forProvider:
+              version: "1.31"
+              tags: {}
+              roleArnSelector:
+                matchControllerRef: true
+                matchLabels:
+                  role: eks-cluster
+              vpcConfig:
+                endpointPublicAccess: true
+                subnetIdSelector:
+                  matchControllerRef: true
+                  matchLabels:
+                    eks-subnet: "true"
+            providerConfigRef:
+              name: default
+        patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: region
+          toFieldPath: spec.forProvider.region
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: clusterName
+          toFieldPath: metadata.name
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: eksVersion
+          toFieldPath: spec.forProvider.version
+        - type: PatchSet
+          patchSetName: aws-common-tags
+        - type: ToCompositeFieldPath
+          fromFieldPath: status.atProvider.identity[0].oidc[0].issuer
+          toFieldPath: status.oidcIssuer
+          policy:
+            fromFieldPath: Optional
+        # Strip https:// from OIDC issuer for IAM trust policy
+        - type: ToCompositeFieldPath
+          fromFieldPath: status.atProvider.identity[0].oidc[0].issuer
+          toFieldPath: status.oidcProvider
+          policy:
+            fromFieldPath: Optional
+          transforms:
+          - type: string
+            string:
+              type: TrimPrefix
+              trim: "https://"
+        # Extract account ID from EKS cluster ARN
+        - type: ToCompositeFieldPath
+          fromFieldPath: status.atProvider.arn
+          toFieldPath: status.accountId
+          policy:
+            fromFieldPath: Optional
+          transforms:
+          - type: string
+            string:
+              type: Regexp
+              regexp:
+                match: 'arn:aws:eks:[^:]+:(\d+):'
+                group: 1
+        # Expose cluster security group for ENIConfig use
+        - type: ToCompositeFieldPath
+          fromFieldPath: status.atProvider.vpcConfig.clusterSecurityGroupId
+          toFieldPath: status.clusterSecurityGroup
+          policy:
+            fromFieldPath: Optional
+
+      # ──────────────────────────────────────────────────
+      # 25. OIDC Provider — enables IRSA for EKS service accounts
+      # ──────────────────────────────────────────────────
+      - name: oidc-provider
+        base:
+          apiVersion: iam.aws.upbound.io/v1beta1
+          kind: OpenIDConnectProvider
+          spec:
+            forProvider:
+              clientIdList:
+              - sts.amazonaws.com
+              thumbprintList:
+              - "9e99a48a9960b14926bb7f3b02e22da2b0ab7280"
+            providerConfigRef:
+              name: default
+        patches:
+        - type: FromCompositeFieldPath
+          fromFieldPath: status.oidcIssuer
+          toFieldPath: spec.forProvider.url
+          policy:
+            fromFieldPath: Optional
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-oidc'
+          toFieldPath: metadata.name
+
+      # ──────────────────────────────────────────────────
+      # 26. EBS CSI IRSA Role — allows EBS CSI driver to manage volumes
+      # ──────────────────────────────────────────────────
+      - name: ebs-csi-role
+        base:
+          apiVersion: iam.aws.upbound.io/v1beta1
+          kind: Role
+          metadata:
+            labels:
+              role: ebs-csi
+          spec:
+            forProvider:
+              tags: {}
+            providerConfigRef:
+              name: default
+        patches:
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-ebs-csi'
+          toFieldPath: metadata.name
+        - type: CombineFromComposite
+          combine:
+            variables:
+            - fromFieldPath: status.accountId
+            - fromFieldPath: status.oidcProvider
+            - fromFieldPath: status.oidcProvider
+            - fromFieldPath: status.oidcProvider
+            strategy: string
+            string:
+              fmt: >-
+                {"Version":"2012-10-17","Statement":[{"Effect":"Allow",
+                "Principal":{"Federated":"arn:aws:iam::%s:oidc-provider/%s"},
+                "Action":"sts:AssumeRoleWithWebIdentity",
+                "Condition":{"StringEquals":{
+                "%s:sub":"system:serviceaccount:kube-system:ebs-csi-controller-sa",
+                "%s:aud":"sts.amazonaws.com"}}}]}
+          toFieldPath: spec.forProvider.assumeRolePolicy
+          policy:
+            fromFieldPath: Optional
+        - type: PatchSet
+          patchSetName: aws-common-tags
+
+      # ──────────────────────────────────────────────────
+      # 27. EBS CSI Policy Attachment
+      # ──────────────────────────────────────────────────
+      - name: ebs-csi-policy
+        base:
+          apiVersion: iam.aws.upbound.io/v1beta1
+          kind: RolePolicyAttachment
+          spec:
+            forProvider:
+              policyArn: arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+              roleSelector:
+                matchControllerRef: true
+                matchLabels:
+                  role: ebs-csi
+            providerConfigRef:
+              name: default
+        patches:
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-ebs-csi-policy'
+          toFieldPath: metadata.name
+
+      # ──────────────────────────────────────────────────
+      # 28. EKS Managed Node Group
+      # ──────────────────────────────────────────────────
+      - name: eks-nodegroup
+        base:
+          apiVersion: eks.aws.upbound.io/v1beta2
+          kind: NodeGroup
+          spec:
+            forProvider:
+              clusterNameSelector:
+                matchControllerRef: true
+              nodeRoleArnSelector:
+                matchControllerRef: true
+                matchLabels:
+                  role: eks-node
+              subnetIdSelector:
+                matchControllerRef: true
+                matchLabels:
+                  access: private
+              instanceTypes:
+              - m5.xlarge
+              scalingConfig:
+                desiredSize: 4
+                minSize: 4
+                maxSize: 6
+              tags:
+                Name: REPLACE
+            providerConfigRef:
+              name: default
+        patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: region
+          toFieldPath: spec.forProvider.region
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-nodegroup'
+          toFieldPath: metadata.name
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-nodegroup'
+          toFieldPath: spec.forProvider.tags["Name"]
+        - type: PatchSet
+          patchSetName: aws-common-tags
+
+      # ──────────────────────────────────────────────────
+      # 26. EKS ClusterAuth — generates kubeconfig with refreshed token
+      # ──────────────────────────────────────────────────
+      - name: eks-cluster-auth
+        base:
+          apiVersion: eks.aws.upbound.io/v1beta1
+          kind: ClusterAuth
+          spec:
+            forProvider:
+              clusterNameSelector:
+                matchControllerRef: true
+            providerConfigRef:
+              name: default
+            writeConnectionSecretToRef:
+              name: runtime-connection
+              namespace: crossplane-system
+        patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: region
+          toFieldPath: spec.forProvider.region
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-cluster-auth'
+          toFieldPath: metadata.name
+
+      # ──────────────────────────────────────────────────
+      # 27. Kubernetes ProviderConfig for runtime cluster (uses ClusterAuth kubeconfig)
+      # ──────────────────────────────────────────────────
+      - name: helm-providerconfig-runtime
+        readinessChecks:
+        - type: None
+        base:
+          apiVersion: helm.crossplane.io/v1beta1
+          kind: ProviderConfig
+          metadata:
+            name: runtime
+          spec:
+            credentials:
+              source: Secret
+              secretRef:
+                name: runtime-connection
+                namespace: crossplane-system
+                key: kubeconfig
+
+      - name: k8s-providerconfig-runtime
+        readinessChecks:
+        - type: None
+        base:
+          apiVersion: kubernetes.crossplane.io/v1alpha1
+          kind: ProviderConfig
+          metadata:
+            name: runtime
+          spec:
+            credentials:
+              source: Secret
+              secretRef:
+                name: runtime-connection
+                namespace: crossplane-system
+                key: kubeconfig
+
+      - name: k8s-providerconfig-infra
+        readinessChecks:
+        - type: None
+        base:
+          apiVersion: kubernetes.crossplane.io/v1alpha1
+          kind: ProviderConfig
+          metadata:
+            name: runtime-infra
+          spec:
+            credentials:
+              source: Secret
+              secretRef:
+                name: runtime-connection
+                namespace: crossplane-system
+                key: kubeconfig
+
+      # ──────────────────────────────────────────────────
+      # 30. EBS CSI Driver Addon — required for PV provisioning on EKS 1.31+
+      # ──────────────────────────────────────────────────
+      - name: eks-ebs-csi
+        base:
+          apiVersion: eks.aws.upbound.io/v1beta1
+          kind: Addon
+          spec:
+            forProvider:
+              addonName: aws-ebs-csi-driver
+              clusterNameSelector:
+                matchControllerRef: true
+              serviceAccountRoleArnSelector:
+                matchControllerRef: true
+                matchLabels:
+                  role: ebs-csi
+            providerConfigRef:
+              name: default
+        patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: region
+          toFieldPath: spec.forProvider.region
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-ebs-csi'
+          toFieldPath: metadata.name
+
+      # ──────────────────────────────────────────────────
+      # 27b. VPC CNI Addon — enables custom networking for pod IPs
+      # ──────────────────────────────────────────────────
+      - name: vpc-cni-addon
+        base:
+          apiVersion: eks.aws.upbound.io/v1beta1
+          kind: Addon
+          spec:
+            forProvider:
+              addonName: vpc-cni
+              clusterNameSelector:
+                matchControllerRef: true
+              resolveConflictsOnCreate: OVERWRITE
+              resolveConflictsOnUpdate: OVERWRITE
+              configurationValues: '{"env":{"AWS_VPC_K8S_CNI_CUSTOM_NETWORK_CFG":"true","ENI_CONFIG_LABEL_DEF":"topology.kubernetes.io/zone"}}'
+            providerConfigRef:
+              name: default
+        patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: region
+          toFieldPath: spec.forProvider.region
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-vpc-cni'
+          toFieldPath: metadata.name
+
+      # ──────────────────────────────────────────────────
+      # 28. Route53 Private Hosted Zone (shoots share seed VPC for DNS visibility)
+      # Private zone associated with the seed VPC. Shoot workers in the same
+      # VPC (via 10.250.0.0/16 secondary CIDR) can resolve seed DNS records.
+      # Matches GCP pattern: private DNS, no domain ownership needed.
+      # ──────────────────────────────────────────────────
+      - name: dns-zone
+        base:
+          apiVersion: route53.aws.upbound.io/v1beta1
+          kind: Zone
+          spec:
+            forProvider:
+              forceDestroy: true
+              vpc:
+              - vpcIdSelector:
+                  matchControllerRef: true
+              tags:
+                Name: REPLACE
+            providerConfigRef:
+              name: default
+        patches:
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-dns'
+          toFieldPath: metadata.name
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: dnsDomain
+          toFieldPath: spec.forProvider.name
+        - type: CombineFromEnvironment
+          combine:
+            variables:
+            - fromFieldPath: clusterName
+            strategy: string
+            string:
+              fmt: '%s-dns'
+          toFieldPath: spec.forProvider.tags["Name"]
+        - type: PatchSet
+          patchSetName: aws-common-tags
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: region
+          toFieldPath: spec.forProvider.vpc[0].vpcRegion
+
+  - step: auto-ready
+    functionRef:
+      name: function-auto-ready
+  - step: sequence
+    functionRef:
+      name: function-sequencer
+    input:
+      apiVersion: sequencer.fn.crossplane.io/v1beta1
+      kind: Input
+      rules:
+      - sequence:
+        - (vpc|eks-cluster-role|eks-node-role)
+        - (subnet-public-.*|subnet-private-.*|igw|eip|eks-cluster-policy|eks-node-.*policy|eks-cni-policy|eks-ecr-policy|vpc-secondary-cidr|vpc-shoot-cidr)
+        - (subnet-pod-.*|natgw|rt-.*|eks-cluster)
+        - (route-.*|rta-.*|eks-cluster-auth|oidc-provider|vpc-cni-addon)
+        - (ebs-csi-role|helm-providerconfig-runtime|k8s-providerconfig-runtime|k8s-providerconfig-infra)
+        - (ebs-csi-policy|eniconfig-.*|dns-zone)
+        - eks-nodegroup
+        - (eks-ebs-csi|pod-cidr-probe-.*)
+      enableDeletionSequencing: true
+      replayDeletion: true

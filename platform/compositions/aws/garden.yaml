@@ -1,0 +1,79 @@
+# XGarden (AWS): The Garden custom resource — Gardener's top-level object.
+#
+# The Garden CR tells the gardener-operator to create the entire Gardener
+# landscape on the runtime cluster:
+#   - Virtual garden API server (kube-apiserver + etcd for Gardener's own API)
+#   - Gardener control plane (API server, controller manager, scheduler, dashboard)
+#   - nginx-ingress controller + DNS records for runtime/virtual domains
+#   - Monitoring stack (Prometheus, Plutono)
+#
+# Separate composition so it can be deleted independently during teardown.
+# When the Garden CR is deleted, the operator runs a ~45-task cleanup DAG
+# (DNS records, load balancers, PVs, virtual cluster) while all dependencies
+# in XWorkload (operator, extensions, secrets) remain alive.
+#
+# The composed manifests (Garden CR, Secrets, VAP guard, Extension CRs) live
+# in platform/templates/garden.tmpl, shared with the GCP composition and
+# branched on the `provider` key from the allotment-config EnvironmentConfig.
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: garden-aws
+  labels:
+    provider: aws
+spec:
+  compositeTypeRef:
+    apiVersion: allotment.io/v1alpha1
+    kind: XGarden
+  mode: Pipeline
+  pipeline:
+    - step: load-versions
+      functionRef:
+        name: function-environment-configs
+      input:
+        apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+        kind: Input
+        spec:
+          environmentConfigs:
+          - type: Reference
+            ref:
+              name: allotment-versions
+          - type: Reference
+            ref:
+              name: allotment-versions-aws
+          - type: Reference
+            ref:
+              name: allotment-config
+
+    # Pull the bootstrap SA key so we can materialise the aws-dns Secret
+    # directly in this composition (so it outlives XVirtualGarden's teardown
+    # and is available throughout Garden's deletion DAG + gardenlet drain).
+    - step: fetch-extra-resources
+      functionRef:
+        name: function-extra-resources
+      input:
+        apiVersion: extra-resources.fn.crossplane.io/v1beta1
+        kind: Input
+        spec:
+          extraResources:
+            - kind: Secret
+              apiVersion: v1
+              into: sa-key
+              namespace: crossplane-system
+              type: Reference
+              ref:
+                name: gardener-sa-key
+
+    - step: create-garden
+      functionRef:
+        name: function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: FileSystem
+        fileSystem:
+          dirPath: /templates
+
+    - step: auto-ready
+      functionRef:
+        name: function-auto-ready

@@ -1,0 +1,433 @@
+{{- if eq .observed.composite.resource.kind "XVirtualGarden" }}
+{{- $xrName := .observed.composite.resource.metadata.name }}
+{{- $envKey := "apiextensions.crossplane.io/environment" }}
+{{- $env := index .context $envKey }}
+{{- $provider := index $env "provider" }}
+{{- $region := index $env "region" }}
+{{- $zones := index $env "zones" }}
+{{- $zone0 := index $zones 0 }}
+{{- $dnsDomain := index $env "dnsDomain" }}
+{{- $clusterName := index $env "clusterName" }}
+{{- $createShoot := index $env "createShoot" }}
+{{- $shootKubernetesVersion := index $env "shootKubernetesVersion" }}
+{{- $awsPreviousKubernetesVersion := index $env "awsCloudProfilePreviousKubernetesVersion" }}
+{{- $gcpPreviousKubernetesVersion := index $env "gcpCloudProfilePreviousKubernetesVersion" }}
+{{- $awsGardenlinuxAmi := "" }}
+{{- /* Provider-specific values reused across several resources below */ -}}
+{{- $dnsProviderType := "" }}
+{{- $dnsSecretName := "" }}
+{{- if eq $provider "aws" }}
+{{-   $dnsProviderType = "aws-route53" }}
+{{-   $dnsSecretName = "aws-dns" }}
+{{-   $awsGardenlinuxAmi = index $env "awsGardenlinuxAmi" }}
+{{- else }}
+{{-   $dnsProviderType = "google-clouddns" }}
+{{-   $dnsSecretName = "gcp-dns" }}
+{{- end }}
+{{- /* Parse cloud credentials from the gardener-sa-key extra-resource (_helpers.tmpl) */ -}}
+{{- $creds := include "allotment.credentials" . | fromYaml }}
+{{- $awsAccessKey := index $creds "awsAccessKey" }}
+{{- $awsSecretKey := index $creds "awsSecretKey" }}
+{{- $saKey := index $creds "saKey" }}
+{{- $hasCreds := false }}
+{{- if eq $provider "aws" }}
+{{-   $hasCreds = and (ne $awsAccessKey "") (ne $awsSecretKey "") }}
+{{- else }}
+{{-   $hasCreds = ne $saKey "" }}
+{{- end }}
+{{- /* AWS: seed VPC id from the XInfra extra-resource — the eval shoot joins the seed VPC */ -}}
+{{- $seedVpcId := "" }}
+{{- $erKey := "apiextensions.crossplane.io/extra-resources" }}
+{{- if hasKey .context $erKey }}
+{{-   $er := index .context $erKey }}
+{{-   if hasKey $er "infra" }}
+{{-     $infraList := index $er "infra" }}
+{{-     if gt (len $infraList) 0 }}
+{{-       $infra := index $infraList 0 }}
+{{-       if and (hasKey $infra "status") (hasKey $infra.status "vpcId") }}
+{{-         $seedVpcId = $infra.status.vpcId }}
+{{-       end }}
+{{-     end }}
+{{-   end }}
+{{- end }}
+---
+# Project: lives in the virtual phase so it deletes before Garden teardown
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: virtual-project
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: virtual-project
+spec:
+{{ include "allotment.nestedObjectReadiness" . | nindent 2 }}
+  forProvider:
+    manifest:
+      apiVersion: kubernetes.crossplane.io/v1alpha2
+      kind: Object
+      metadata:
+        name: gardener-project
+      spec:
+        forProvider:
+          manifest:
+            apiVersion: core.gardener.cloud/v1beta1
+            kind: Project
+            metadata:
+              name: allotment
+              annotations:
+                confirmation.gardener.cloud/deletion: 'true'
+            spec:
+              description: Allotment default project
+              purpose: evaluation
+              namespace: garden-allotment
+              owner:
+                apiGroup: rbac.authorization.k8s.io
+                kind: User
+                name: admin
+              members:
+                - apiGroup: rbac.authorization.k8s.io
+                  kind: User
+                  role: admin
+                  name: admin
+        providerConfigRef:
+          name: virtual
+  providerConfigRef:
+    name: runtime
+{{- if $hasCreds }}
+---
+# Secret: {{ if eq $provider "aws" }}AWS{{ else }}GCP{{ end }} cloud provider credentials on virtual garden
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: {{ $xrName }}-virtual-cloud-provider
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: virtual-cloud-provider-secret
+spec:
+{{ include "allotment.nestedObjectReadiness" . | nindent 2 }}
+  forProvider:
+    manifest:
+      apiVersion: kubernetes.crossplane.io/v1alpha2
+      kind: Object
+      metadata:
+        name: virtual-cloud-provider-secret
+      spec:
+        forProvider:
+          manifest:
+            apiVersion: v1
+            kind: Secret
+            metadata:
+              name: {{ $provider }}-cloud-provider
+              namespace: garden
+            type: Opaque
+            data:
+              {{- if eq $provider "aws" }}
+              accessKeyID: {{ $awsAccessKey }}
+              secretAccessKey: {{ $awsSecretKey }}
+              {{- else }}
+              serviceaccount.json: {{ $saKey }}
+              {{- end }}
+        providerConfigRef:
+          name: virtual
+  providerConfigRef:
+    name: runtime
+{{- if eq $provider "aws" }}
+# NB: the aws-dns (internal-domain) and aws-default-domain Secrets
+# are created by XGarden's composition, not here — they must outlive
+# XVirtualGarden and XSeed teardown: Garden's deletion DAG and
+# gardenlet's Seed-drain read aws-dns for Route53 cleanup, and
+# gardener-controller-manager reads aws-default-domain on every
+# controllerinstallation-seed reconcile until the Seed is gone.
+{{- else }}
+# NB: the gcp-dns (internal-domain) and gcp-default-domain Secrets
+# are created by XGarden's composition, not here — they must outlive
+# XVirtualGarden and XSeed teardown: Garden's deletion DAG and
+# gardenlet's Seed-drain read gcp-dns for Cloud DNS cleanup, and
+# gardener-controller-manager reads gcp-default-domain on every
+# controllerinstallation-seed reconcile until the Seed is gone.
+{{- end }}
+{{- end }}
+---
+# CloudProfile: {{ if eq $provider "aws" }}AWS{{ else }}GCP{{ end }} machine types, regions, images — double-nested Object
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: {{ $xrName }}-virtual-cloudprofile
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: virtual-cloudprofile
+spec:
+{{ include "allotment.nestedObjectReadiness" . | nindent 2 }}
+  forProvider:
+    manifest:
+      apiVersion: kubernetes.crossplane.io/v1alpha2
+      kind: Object
+      metadata:
+        name: cloudprofile-{{ $provider }}
+      spec:
+        forProvider:
+          manifest:
+            apiVersion: core.gardener.cloud/v1beta1
+            kind: CloudProfile
+            metadata:
+              name: {{ $provider }}
+            spec:
+              type: {{ $provider }}
+              seedSelector:
+                providerTypes: ["*"]
+              {{- if eq $provider "aws" }}
+              providerConfig:
+                apiVersion: aws.provider.extensions.gardener.cloud/v1alpha1
+                kind: CloudProfileConfig
+                machineImages:
+                - name: gardenlinux
+                  versions:
+                  - version: "1592.18.0"
+                    regions:
+                    - name: {{ $region }}
+                      ami: {{ $awsGardenlinuxAmi }}
+              kubernetes:
+                versions:
+                  - {version: {{ $shootKubernetesVersion | quote }}, classification: supported}
+                  - {version: {{ $awsPreviousKubernetesVersion | quote }}, classification: supported}
+              machineImages:
+                - name: gardenlinux
+                  versions:
+                    - version: "1592.18.0"
+                      architectures: ["amd64"]
+              machineTypes:
+                - {name: m5.large, cpu: "2", gpu: "0", memory: 8Gi}
+                - {name: m5.xlarge, cpu: "4", gpu: "0", memory: 16Gi}
+                - {name: m5.2xlarge, cpu: "8", gpu: "0", memory: 32Gi}
+              volumeTypes:
+                - {name: gp3, class: standard}
+                - {name: io1, class: premium}
+              regions:
+                - name: {{ $region }}
+                  zones:
+{{ range $zones }}
+                  - name: {{ . }}
+{{ end }}
+              {{- else }}
+              providerConfig:
+                apiVersion: gcp.provider.extensions.gardener.cloud/v1alpha1
+                kind: CloudProfileConfig
+                machineImages:
+                  - name: gardenlinux
+                    versions:
+                      - version: "0.0.0"
+                        image: projects/sap-se-gcp-gardenlinux/global/images/gardenlinux-gcp-ff804026cbe7b5f2d6f729e4-1877-1-c5ac398b
+              machineImages:
+                - name: gardenlinux
+                  versions:
+                    - version: "0.0.0"
+              kubernetes:
+                versions:
+                  - {version: {{ $gcpPreviousKubernetesVersion | quote }}, classification: supported}
+                  - {version: {{ $shootKubernetesVersion | quote }}, classification: supported}
+              machineTypes:
+                - {name: n1-standard-2, cpu: "2", gpu: "0", memory: 7500Mi, usable: true}
+                - {name: n1-standard-4, cpu: "4", gpu: "0", memory: 15Gi, usable: true}
+                - {name: n1-standard-8, cpu: "8", gpu: "0", memory: 30Gi, usable: true}
+              volumeTypes:
+                - {name: pd-standard, class: standard, usable: true}
+                - {name: pd-ssd, class: premium, usable: true}
+              regions:
+                - name: {{ $region }}
+                  zones:
+{{ range $zones }}
+                  - name: {{ . }}
+{{ end }}
+              {{- end }}
+        providerConfigRef:
+          name: virtual
+  providerConfigRef:
+    name: runtime
+---
+# CredentialsBinding: {{ if eq $provider "aws" }}AWS{{ else }}GCP{{ end }} cloud infrastructure — links shoot clusters to SA
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: {{ $xrName }}-virtual-credentials-{{ $provider }}
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: virtual-credentials-{{ $provider }}
+spec:
+{{ include "allotment.nestedObjectReadiness" . | nindent 2 }}
+  forProvider:
+    manifest:
+      apiVersion: kubernetes.crossplane.io/v1alpha2
+      kind: Object
+      metadata:
+        name: credentials-{{ $provider }}
+      spec:
+        forProvider:
+          manifest:
+            apiVersion: security.gardener.cloud/v1alpha1
+            kind: CredentialsBinding
+            metadata:
+              name: {{ $provider }}
+              namespace: garden-allotment
+            credentialsRef:
+              apiVersion: v1
+              kind: Secret
+              name: {{ $provider }}-cloud-provider
+              namespace: garden
+            provider:
+              type: {{ $provider }}
+        providerConfigRef:
+          name: virtual
+  providerConfigRef:
+    name: runtime
+---
+# CredentialsBinding: {{ if eq $provider "aws" }}AWS{{ else }}GCP{{ end }} DNS — Gardener treats cloud-provider and DNS independently
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: {{ $xrName }}-virtual-credentials-dns-{{ $provider }}
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: virtual-credentials-dns-{{ $provider }}
+spec:
+{{ include "allotment.nestedObjectReadiness" . | nindent 2 }}
+  forProvider:
+    manifest:
+      apiVersion: kubernetes.crossplane.io/v1alpha2
+      kind: Object
+      metadata:
+        name: credentials-{{ $provider }}-dns
+      spec:
+        forProvider:
+          manifest:
+            apiVersion: security.gardener.cloud/v1alpha1
+            kind: CredentialsBinding
+            metadata:
+              name: {{ $dnsSecretName }}
+              namespace: garden-allotment
+            credentialsRef:
+              apiVersion: v1
+              kind: Secret
+              name: {{ $dnsSecretName }}
+              namespace: garden
+            provider:
+              type: {{ $dnsProviderType }}
+        providerConfigRef:
+          name: virtual
+  providerConfigRef:
+    name: runtime
+{{- if eq $createShoot "true" }}
+---
+{{- if eq $provider "aws" }}
+# Default shoot cluster: AWS evaluation shoot
+# Shares seed VPC via vpc.id — workers in 10.250.0.0/16 secondary CIDR.
+# Mirrors GCP pattern: private DNS visible, no domain ownership needed.
+{{- else }}
+# Default shoot cluster: GCP evaluation shoot
+{{- end }}
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: {{ $xrName }}-default-shoot
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: virtual-default-shoot
+spec:
+{{ include "allotment.nestedObjectReadiness" . | nindent 2 }}
+  forProvider:
+    manifest:
+      apiVersion: kubernetes.crossplane.io/v1alpha2
+      kind: Object
+      metadata:
+        name: default-shoot
+      spec:
+        forProvider:
+          manifest:
+            apiVersion: core.gardener.cloud/v1beta1
+            kind: Shoot
+            metadata:
+              name: eval
+              namespace: garden-allotment
+              annotations:
+                confirmation.gardener.cloud/deletion: 'true'
+            spec:
+              cloudProfile:
+                name: {{ $provider }}
+              credentialsBindingName: {{ $provider }}
+              kubernetes:
+                version: {{ $shootKubernetesVersion | quote }}
+              {{- if eq $provider "aws" }}
+              provider:
+                type: aws
+                infrastructureConfig:
+                  apiVersion: aws.provider.extensions.gardener.cloud/v1alpha1
+                  kind: InfrastructureConfig
+                  networks:
+                    vpc:
+                      id: {{ $seedVpcId | quote }}
+                    zones:
+                    - name: {{ $zone0 }}
+                      internal: "10.250.112.0/22"
+                      public: "10.250.96.0/22"
+                      workers: "10.250.0.0/19"
+                controlPlaneConfig:
+                  apiVersion: aws.provider.extensions.gardener.cloud/v1alpha1
+                  kind: ControlPlaneConfig
+                workers:
+                - name: worker
+                  machine:
+                    type: m5.xlarge
+                    image:
+                      name: gardenlinux
+                      version: "1592.18.0"
+                  minimum: 1
+                  maximum: 2
+                  maxSurge: 1
+                  zones:
+                  - {{ $zone0 }}
+                  volume:
+                    type: gp3
+                    size: 50Gi
+                  cri:
+                    name: containerd
+              {{- else }}
+              provider:
+                type: gcp
+                infrastructureConfig:
+                  apiVersion: gcp.provider.extensions.gardener.cloud/v1alpha1
+                  kind: InfrastructureConfig
+                  networks:
+                    vpc:
+                      name: default
+                      cloudRouter:
+                        name: {{ $clusterName }}-cloud-router
+                    workers: 172.16.0.0/16
+                controlPlaneConfig:
+                  apiVersion: gcp.provider.extensions.gardener.cloud/v1alpha1
+                  kind: ControlPlaneConfig
+                  zone: {{ $zone0 }}
+                workers:
+                - name: worker
+                  machine:
+                    type: n1-standard-2
+                    image:
+                      name: gardenlinux
+                      version: "0.0.0"
+                  minimum: 1
+                  maximum: 2
+                  maxSurge: 1
+                  zones:
+                  - {{ $zone0 }}
+                  volume:
+                    type: pd-standard
+                    size: 50Gi
+                  cri:
+                    name: containerd
+              {{- end }}
+              networking:
+                type: calico
+                pods: 192.168.128.0/18
+                services: 192.168.192.0/18
+                nodes: {{ if eq $provider "aws" }}10.250.0.0/16{{ else }}172.16.0.0/16{{ end }}
+              region: {{ $region }}
+              purpose: evaluation
+              seedName: allotment
+        providerConfigRef:
+          name: virtual
+  providerConfigRef:
+    name: runtime
+{{- end }}
+{{- end }}

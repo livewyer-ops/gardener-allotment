@@ -1,0 +1,261 @@
+{{- if eq .observed.composite.resource.kind "XAllotment" }}
+{{- $envKey := "apiextensions.crossplane.io/environment" }}
+{{- $env := index .context $envKey }}
+{{- $provider := index $env "provider" }}
+{{- $observedResources := dig "resources" (dict) .observed }}
+{{- $seedExists := hasKey $observedResources "seed" }}
+{{- $infraReady := false }}
+{{- $infraConditions := dig "resources" "infra" "resource" "status" "conditions" (list) .observed }}
+{{- range $condition := $infraConditions }}
+{{-   if and (eq (index $condition "type") "Ready") (eq (index $condition "status") "True") }}
+{{-     $infraReady = true }}
+{{-   end }}
+{{- end }}
+{{- $renderSeed := or (ne $provider "aws") $infraReady $seedExists }}
+{{- if eq $provider "aws" }}
+---
+# Cloud ProviderConfig — sequenced first so every XInfra managed
+# resource can reach AWS.
+apiVersion: aws.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: default
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: cloud-providerconfig
+    gotemplating.fn.crossplane.io/ready: "True"
+spec:
+  credentials:
+    source: Secret
+    secretRef:
+      namespace: crossplane-system
+      name: aws-credentials
+      key: credentials
+{{- else }}
+{{- $projectId := index $env "projectId" }}
+---
+# Cloud ProviderConfig — projectID flows from deploy/config.yaml via
+# the allotment-config EnvironmentConfig.
+apiVersion: gcp.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: default
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: cloud-providerconfig
+    gotemplating.fn.crossplane.io/ready: "True"
+spec:
+  projectID: {{ $projectId | quote }}
+  credentials:
+    source: Secret
+    secretRef:
+      namespace: crossplane-system
+      name: gcp-credentials
+      key: credentials
+{{- end }}
+---
+apiVersion: allotment.io/v1alpha1
+kind: XInfra
+metadata:
+  name: garden-infra
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: infra
+spec:
+  crossplane:
+    compositionSelector:
+      matchLabels:
+        provider: {{ $provider }}
+---
+apiVersion: allotment.io/v1alpha1
+kind: XWorkload
+metadata:
+  name: garden-workload
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: workload
+spec:
+  crossplane:
+    compositionSelector:
+      matchLabels:
+        provider: {{ $provider }}
+---
+apiVersion: allotment.io/v1alpha1
+kind: XGarden
+metadata:
+  name: garden-core
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: garden
+spec:
+  crossplane:
+    compositionSelector:
+      matchLabels:
+        provider: {{ $provider }}
+{{- if $renderSeed }}
+---
+apiVersion: allotment.io/v1alpha1
+kind: XSeed
+metadata:
+  name: garden-seed
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: seed
+spec:
+  crossplane:
+    compositionSelector:
+      matchLabels:
+        provider: {{ $provider }}
+{{- end }}
+---
+apiVersion: allotment.io/v1alpha1
+kind: XVirtualGarden
+metadata:
+  name: garden-virtual
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: virtual
+spec:
+  crossplane:
+    compositionSelector:
+      matchLabels:
+        provider: {{ $provider }}
+---
+# ClusterUsages enforce the deletion order at the Kubernetes admission
+# webhook layer (nousages.protection.crossplane.io). Chain is linear:
+# on cascaded delete from XAllotment, `of` is blocked until `by` is gone.
+#
+# Release order: virtual -> seed -> garden -> workload -> infra -> cloud-providerconfig
+#
+# ready annotation: ClusterUsages have no native Ready condition —
+# force "True" so XAllotment.Ready isn't held hostage to their state.
+apiVersion: protection.crossplane.io/v1beta1
+kind: ClusterUsage
+metadata:
+  name: cloud-providerconfig-used-by-infra
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: usage-pc-infra
+    gotemplating.fn.crossplane.io/ready: "True"
+spec:
+  of:
+    apiVersion: {{ $provider }}.upbound.io/v1beta1
+    kind: ProviderConfig
+    resourceRef:
+      name: default
+  by:
+    apiVersion: allotment.io/v1alpha1
+    kind: XInfra
+    resourceRef:
+      name: garden-infra
+  replayDeletion: true
+---
+apiVersion: protection.crossplane.io/v1beta1
+kind: ClusterUsage
+metadata:
+  name: infra-used-by-workload
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: usage-infra-workload
+    gotemplating.fn.crossplane.io/ready: "True"
+spec:
+  of:
+    apiVersion: allotment.io/v1alpha1
+    kind: XInfra
+    resourceRef:
+      name: garden-infra
+  by:
+    apiVersion: allotment.io/v1alpha1
+    kind: XWorkload
+    resourceRef:
+      name: garden-workload
+  replayDeletion: true
+---
+# NOTE: workload-used-by-garden below replaces the removed
+# workload-used-by-extensions + extensions-used-by-garden pair:
+# Extension CRs are now composed inside XGarden, so XWorkload
+# only needs to outlive XGarden (not a separate XExtensions).
+apiVersion: protection.crossplane.io/v1beta1
+kind: ClusterUsage
+metadata:
+  name: workload-used-by-garden
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: usage-workload-garden
+    gotemplating.fn.crossplane.io/ready: "True"
+spec:
+  of:
+    apiVersion: allotment.io/v1alpha1
+    kind: XWorkload
+    resourceRef:
+      name: garden-workload
+  by:
+    apiVersion: allotment.io/v1alpha1
+    kind: XGarden
+    resourceRef:
+      name: garden-core
+  replayDeletion: true
+---
+{{- if $renderSeed }}
+apiVersion: protection.crossplane.io/v1beta1
+kind: ClusterUsage
+metadata:
+  name: seed-used-by-virtual
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: usage-seed-virtual
+    gotemplating.fn.crossplane.io/ready: "True"
+spec:
+  of:
+    apiVersion: allotment.io/v1alpha1
+    kind: XSeed
+    resourceRef:
+      name: garden-seed
+  by:
+    apiVersion: allotment.io/v1alpha1
+    kind: XVirtualGarden
+    resourceRef:
+      name: garden-virtual
+  replayDeletion: true
+---
+# Seed must delete before Garden — XSeed's Seed CR delete-hook needs
+# gardenlet to drain seed-class ManagedResources while Garden's
+# virtual garden API and DNS are still reachable.
+apiVersion: protection.crossplane.io/v1beta1
+kind: ClusterUsage
+metadata:
+  name: garden-used-by-seed
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: usage-garden-seed
+    gotemplating.fn.crossplane.io/ready: "True"
+spec:
+  of:
+    apiVersion: allotment.io/v1alpha1
+    kind: XGarden
+    resourceRef:
+      name: garden-core
+  by:
+    apiVersion: allotment.io/v1alpha1
+    kind: XSeed
+    resourceRef:
+      name: garden-seed
+  replayDeletion: true
+---
+{{- end }}
+# Virtual must delete before Garden — Garden's deletion DAG tears
+# down the virtual garden API, which XVirtualGarden's Objects need
+# to reach for their own cleanup.
+apiVersion: protection.crossplane.io/v1beta1
+kind: ClusterUsage
+metadata:
+  name: garden-used-by-virtual
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: usage-garden-virtual
+    gotemplating.fn.crossplane.io/ready: "True"
+spec:
+  of:
+    apiVersion: allotment.io/v1alpha1
+    kind: XGarden
+    resourceRef:
+      name: garden-core
+  by:
+    apiVersion: allotment.io/v1alpha1
+    kind: XVirtualGarden
+    resourceRef:
+      name: garden-virtual
+  replayDeletion: true
+---
+# NB: previously had extensions-used-by-virtual and
+# extensions-used-by-seed ClusterUsages here. No longer needed —
+# Extension CRs are composed inside XGarden, so garden-used-by-*
+# already protects them indirectly.
+{{- end }}

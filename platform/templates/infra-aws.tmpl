@@ -1,0 +1,181 @@
+{{- if eq .observed.composite.resource.kind "XInfra" }}
+{{- $envKey := "apiextensions.crossplane.io/environment" }}
+{{- $env := index .context $envKey }}
+{{- $provider := index $env "provider" }}
+{{- if eq $provider "aws" }}
+{{- $clusterName := index $env "clusterName" }}
+{{- $region := index $env "region" }}
+{{- $zones := index $env "zones" }}
+{{- $createdBy := default "allotment" (index $env "createdBy") }}
+{{- $expiresAt := default "" (index $env "expiresAt") }}
+{{- $xrStatus := dig "status" (dict) .observed.composite.resource }}
+{{- $podSubnetA := default (dig "podSubnetA" "" $xrStatus) (dig "resources" "subnet-pod-a" "resource" "status" "atProvider" "id" "" .observed) }}
+{{- $podSubnetB := default (dig "podSubnetB" "" $xrStatus) (dig "resources" "subnet-pod-b" "resource" "status" "atProvider" "id" "" .observed) }}
+{{- $clusterSecurityGroup := default "REPLACE" (dig "clusterSecurityGroup" "" $xrStatus) }}
+{{- $zoneData := list
+  (dict "suffix" "a" "zone" (index $zones 0) "publicCidr" "10.0.0.0/19" "privateCidr" "10.0.64.0/19" "podCidr" "100.64.0.0/19" "podSubnetId" (default "REPLACE" $podSubnetA))
+  (dict "suffix" "b" "zone" (index $zones 1) "publicCidr" "10.0.32.0/19" "privateCidr" "10.0.96.0/19" "podCidr" "100.64.32.0/19" "podSubnetId" (default "REPLACE" $podSubnetB))
+}}
+{{- $subnetTypes := list
+  (dict "access" "public" "cidrKey" "publicCidr" "mapPublicIp" "true" "roleTag" "kubernetes.io/role/elb")
+  (dict "access" "private" "cidrKey" "privateCidr" "mapPublicIp" "" "roleTag" "kubernetes.io/role/internal-elb")
+  (dict "access" "pod" "cidrKey" "podCidr" "mapPublicIp" "false" "roleTag" "")
+}}
+{{- range $subnet := $subnetTypes }}
+{{- $access := index $subnet "access" }}
+{{- range $zone := $zoneData }}
+{{- $suffix := index $zone "suffix" }}
+---
+apiVersion: ec2.aws.upbound.io/v1beta1
+kind: Subnet
+metadata:
+  name: {{ printf "%s-%s-%s" $clusterName $access $suffix | quote }}
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: subnet-{{ $access }}-{{ $suffix }}
+  labels:
+    access: {{ $access }}
+    zone: {{ $suffix }}
+    {{ if ne $access "pod" }}
+    eks-subnet: "true"
+    {{ end }}
+spec:
+  forProvider:
+    region: {{ $region | quote }}
+    availabilityZone: {{ index $zone "zone" | quote }}
+    cidrBlock: {{ index $zone (index $subnet "cidrKey") | quote }}
+    {{ if eq (index $subnet "mapPublicIp") "true" }}
+    mapPublicIpOnLaunch: true
+    {{ else if eq (index $subnet "mapPublicIp") "false" }}
+    mapPublicIpOnLaunch: false
+    {{ end }}
+    vpcIdSelector:
+      matchControllerRef: true
+    tags:
+      Name: {{ printf "%s-%s-%s" $clusterName $access $suffix | quote }}
+      allotment.cluster: {{ $clusterName | quote }}
+      allotment.provider: "aws"
+      allotment.created-by: {{ $createdBy | quote }}
+      {{ if ne $expiresAt "" }}
+      allotment.expires-at: {{ $expiresAt | quote }}
+      {{ end }}
+      {{ if ne (index $subnet "roleTag") "" }}
+      {{ index $subnet "roleTag" }}: "1"
+      {{ end }}
+  providerConfigRef:
+    name: default
+{{- end }}
+{{- end }}
+{{- if or $podSubnetA $podSubnetB }}
+---
+apiVersion: allotment.io/v1alpha1
+kind: XInfra
+status:
+  {{ if $podSubnetA }}
+  podSubnetA: {{ $podSubnetA | quote }}
+  {{ end }}
+  {{ if $podSubnetB }}
+  podSubnetB: {{ $podSubnetB | quote }}
+  {{ end }}
+{{- end }}
+{{- $routeAssociations := list
+  (dict "access" "public" "route" "public")
+  (dict "access" "private" "route" "private")
+  (dict "access" "pod" "route" "private")
+}}
+{{- range $association := $routeAssociations }}
+{{- $access := index $association "access" }}
+{{- range $zone := $zoneData }}
+{{- $suffix := index $zone "suffix" }}
+---
+apiVersion: ec2.aws.upbound.io/v1beta1
+kind: RouteTableAssociation
+metadata:
+  name: {{ printf "%s-rta-%s-%s" $clusterName $access $suffix | quote }}
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: rta-{{ $access }}-{{ $suffix }}
+spec:
+  forProvider:
+    region: {{ $region | quote }}
+    routeTableIdSelector:
+      matchControllerRef: true
+      matchLabels:
+        route: {{ index $association "route" }}
+    subnetIdSelector:
+      matchControllerRef: true
+      matchLabels:
+        access: {{ $access }}
+        zone: {{ $suffix }}
+  providerConfigRef:
+    name: default
+{{- end }}
+{{- end }}
+{{- range $zone := $zoneData }}
+{{- $suffix := index $zone "suffix" }}
+{{- $zoneName := index $zone "zone" }}
+---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: {{ printf "%s-eniconfig-%s" $clusterName $suffix | quote }}
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: eniconfig-{{ $suffix }}
+spec:
+  deletionPolicy: Orphan
+  forProvider:
+    manifest:
+      apiVersion: crd.k8s.amazonaws.com/v1alpha1
+      kind: ENIConfig
+      metadata:
+        name: {{ $zoneName | quote }}
+      spec:
+        securityGroups:
+        - {{ $clusterSecurityGroup | quote }}
+        subnet: {{ index $zone "podSubnetId" | quote }}
+  providerConfigRef:
+    name: runtime-infra
+---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: {{ printf "%s-pod-cidr-probe-%s" $clusterName $suffix | quote }}
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: pod-cidr-probe-{{ $suffix }}
+spec:
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status.succeeded) && object.status.succeeded >= 1
+  forProvider:
+    manifest:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: {{ printf "%s-pod-cidr-probe-%s" $clusterName $suffix | quote }}
+        namespace: kube-system
+      spec:
+        backoffLimit: 12
+        template:
+          spec:
+            restartPolicy: Never
+            nodeSelector:
+              topology.kubernetes.io/zone: {{ $zoneName | quote }}
+            containers:
+            - name: probe
+              image: public.ecr.aws/docker/library/busybox:1.37.0
+              env:
+              - name: POD_IP
+                valueFrom:
+                  fieldRef:
+                    fieldPath: status.podIP
+              command:
+              - sh
+              - -ec
+              - |
+                case "$POD_IP" in
+                  100.64.*) exit 0 ;;
+                  *) echo "pod IP $POD_IP is outside 100.64.0.0/16"; exit 1 ;;
+                esac
+  providerConfigRef:
+    name: runtime-infra
+{{- end }}
+{{- end }}
+{{- end }}

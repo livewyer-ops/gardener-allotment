@@ -1,0 +1,685 @@
+{{- if eq .observed.composite.resource.kind "XGarden" }}
+{{- $envKey := "apiextensions.crossplane.io/environment" }}
+{{- $env := index .context $envKey }}
+{{- $provider := index $env "provider" }}
+{{- $region := index $env "region" }}
+{{- $zones := index $env "zones" }}
+{{- $dnsDomain := index $env "dnsDomain" }}
+{{- $virtualGardenKubernetesVersion := index $env "virtualGardenKubernetesVersion" }}
+{{- /* Provider-specific values reused across several resources below */ -}}
+{{- $dnsProviderType := "" }}
+{{- $dnsSecretName := "" }}
+{{- $defaultDomainSecretName := "" }}
+{{- $providerExtVersion := "" }}
+{{- if eq $provider "aws" }}
+{{-   $dnsProviderType = "aws-route53" }}
+{{-   $dnsSecretName = "aws-dns" }}
+{{-   $defaultDomainSecretName = "aws-default-domain" }}
+{{-   $providerExtVersion = index $env "providerAwsVersion" }}
+{{- else }}
+{{-   $dnsProviderType = "google-clouddns" }}
+{{-   $dnsSecretName = "gcp-dns" }}
+{{-   $defaultDomainSecretName = "gcp-default-domain" }}
+{{-   $providerExtVersion = index $env "providerGcpVersion" }}
+{{- end }}
+{{- /* Parse cloud credentials from the gardener-sa-key extra-resource (_helpers.tmpl) */ -}}
+{{- $creds := include "allotment.credentials" . | fromYaml }}
+{{- $awsAccessKey := index $creds "awsAccessKey" }}
+{{- $awsSecretKey := index $creds "awsSecretKey" }}
+{{- $saKey := index $creds "saKey" }}
+{{- $hasCreds := false }}
+{{- if eq $provider "aws" }}
+{{-   $hasCreds = and (ne $awsAccessKey "") (ne $awsSecretKey "") }}
+{{- else }}
+{{-   $hasCreds = ne $saKey "" }}
+{{- end }}
+{{- if $hasCreds }}
+---
+# Cloud DNS credential Secret on the virtual garden — moved here from
+# XVirtualGarden so it outlives shoots/CloudProfile/CredentialsBindings
+# and is still reachable during Garden's deletion DAG (DNS record cleanup)
+# and gardenlet's Seed-drain flow.
+# Deletion policies: the OUTER Object is Delete so the inner Object MR
+# is removed from the runtime cluster — leaving it behind pins the
+# runtime "virtual" ProviderConfig via in-use protection
+# (ProviderConfigUsage), permanently blocking XWorkload teardown.
+# The INNER Object is Orphan so removing it never calls the virtual
+# garden API: the Secret itself stays on the virtual garden for
+# Garden's deletion DAG / gardenlet drain to read, and dies with
+# the virtual garden etcd.
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: garden-dns-secret
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: dns-secret
+spec:
+{{ include "allotment.nestedObjectReadiness" . | nindent 2 }}
+  deletionPolicy: Delete
+  forProvider:
+    manifest:
+      apiVersion: kubernetes.crossplane.io/v1alpha2
+      kind: Object
+      metadata:
+        name: garden-dns-secret-inner
+      spec:
+        deletionPolicy: Orphan
+        forProvider:
+          manifest:
+            apiVersion: v1
+            kind: Secret
+            metadata:
+              name: {{ $dnsSecretName }}
+              namespace: garden
+              labels:
+                gardener.cloud/role: internal-domain
+              annotations:
+                dns.gardener.cloud/provider: {{ $dnsProviderType }}
+                dns.gardener.cloud/domain: {{ $dnsDomain }}
+            type: Opaque
+            data:
+              {{- if eq $provider "aws" }}
+              accessKeyID: {{ $awsAccessKey }}
+              secretAccessKey: {{ $awsSecretKey }}
+              {{- else }}
+              serviceaccount.json: {{ $saKey }}
+              {{- end }}
+        providerConfigRef:
+          name: virtual
+  providerConfigRef:
+    name: runtime
+---
+# Default-domain Secret on the virtual garden — moved here from
+# XVirtualGarden for the same lifecycle reason as the DNS Secret above:
+# gardener-controller-manager's controllerinstallation-seed reconciler
+# reads default-domain credentials on every reconcile and must keep
+# working until the Seed is fully deleted (XSeed deletes after
+# XVirtualGarden but before XGarden). If this Secret vanishes early,
+# GCM errors before deleting the seed's ControllerInstallations and
+# gardenlet's Seed deletion blocks at "Ensuring all
+# ControllerInstallations are gone".
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: garden-default-domain-secret
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: default-domain-secret
+spec:
+{{ include "allotment.nestedObjectReadiness" . | nindent 2 }}
+  deletionPolicy: Delete
+  forProvider:
+    manifest:
+      apiVersion: kubernetes.crossplane.io/v1alpha2
+      kind: Object
+      metadata:
+        name: garden-default-domain-secret-inner
+      spec:
+        deletionPolicy: Orphan
+        forProvider:
+          manifest:
+            apiVersion: v1
+            kind: Secret
+            metadata:
+              name: {{ $defaultDomainSecretName }}
+              namespace: garden
+              labels:
+                gardener.cloud/role: default-domain
+              annotations:
+                dns.gardener.cloud/provider: {{ $dnsProviderType }}
+                dns.gardener.cloud/domain: shoot.{{ $dnsDomain }}
+            type: Opaque
+            data:
+              {{- if eq $provider "aws" }}
+              accessKeyID: {{ $awsAccessKey }}
+              secretAccessKey: {{ $awsSecretKey }}
+              {{- else }}
+              serviceaccount.json: {{ $saKey }}
+              {{- end }}
+        providerConfigRef:
+          name: virtual
+  providerConfigRef:
+    name: runtime
+{{- end }}
+---
+# Seed-registration guard (ValidatingAdmissionPolicy): gardenlet
+# re-creates its Seed unconditionally at every container start
+# (registerSeed in cmd/gardenlet — no upstream guard), and the
+# SeedAuthorizer always allows Seed CREATE for gardenlets. This
+# policy permits CREATE of Seeds by the gardener.cloud:system:seeds
+# group only while the allow-seed-registration ConfigMap (composed
+# in XSeed) exists; the binding's parameterNotFoundAction: Deny
+# flips it to a deny the instant XSeed teardown removes the marker.
+# gardener-apiserver enables the ValidatingAdmissionPolicy plugin
+# by default, so this is enforced for core.gardener.cloud/seeds.
+# Composed in XGarden so it outlives XSeed and dies with the
+# virtual garden. Outer Delete + inner Orphan:
+# same lifecycle rationale as the Secrets above.
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: garden-seed-registration-vap
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: seed-registration-vap
+spec:
+{{ include "allotment.nestedObjectReadiness" . | nindent 2 }}
+  deletionPolicy: Delete
+  forProvider:
+    manifest:
+      apiVersion: kubernetes.crossplane.io/v1alpha2
+      kind: Object
+      metadata:
+        name: garden-seed-registration-vap-inner
+      spec:
+        deletionPolicy: Orphan
+        forProvider:
+          manifest:
+            apiVersion: admissionregistration.k8s.io/v1
+            kind: ValidatingAdmissionPolicy
+            metadata:
+              name: seed-registration-permit
+            spec:
+              failurePolicy: Fail
+              paramKind:
+                apiVersion: v1
+                kind: ConfigMap
+              matchConstraints:
+                resourceRules:
+                  - apiGroups: ["core.gardener.cloud"]
+                    apiVersions: ["v1beta1"]
+                    operations: ["CREATE"]
+                    resources: ["seeds"]
+              matchConditions:
+                - name: is-gardenlet
+                  expression: "'gardener.cloud:system:seeds' in request.userInfo.groups"
+              validations:
+                - expression: "true"
+                  message: "seed registration is permitted while the allow-seed-registration ConfigMap exists"
+        providerConfigRef:
+          name: virtual
+  providerConfigRef:
+    name: runtime
+---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: garden-seed-registration-vapb
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: seed-registration-vapb
+spec:
+{{ include "allotment.nestedObjectReadiness" . | nindent 2 }}
+  deletionPolicy: Delete
+  forProvider:
+    manifest:
+      apiVersion: kubernetes.crossplane.io/v1alpha2
+      kind: Object
+      metadata:
+        name: garden-seed-registration-vapb-inner
+      spec:
+        deletionPolicy: Orphan
+        forProvider:
+          manifest:
+            apiVersion: admissionregistration.k8s.io/v1
+            kind: ValidatingAdmissionPolicyBinding
+            metadata:
+              name: seed-registration-permit
+            spec:
+              policyName: seed-registration-permit
+              validationActions: ["Deny"]
+              paramRef:
+                name: allow-seed-registration
+                namespace: garden
+                parameterNotFoundAction: Deny
+        providerConfigRef:
+          name: virtual
+  providerConfigRef:
+    name: runtime
+---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: garden-core
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: garden-core
+spec:
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status.lastOperation) && object.status.lastOperation.state == "Succeeded"
+  forProvider:
+    manifest:
+      apiVersion: operator.gardener.cloud/v1alpha1
+      kind: Garden
+      metadata:
+        name: core
+        namespace: garden
+        annotations:
+          confirmation.gardener.cloud/deletion: 'true'
+      spec:
+        dns:
+          providers:
+          - name: primary
+            type: {{ $dnsProviderType }}
+            secretRef:
+              name: {{ $dnsSecretName }}
+        runtimeCluster:
+          ingress:
+            domains:
+            - name: runtime.{{ $dnsDomain }}
+              provider: primary
+            controller:
+              kind: nginx
+          networking:
+            {{- if eq $provider "aws" }}
+            nodes:
+            - 10.0.0.0/16
+            pods:
+            - 100.64.0.0/16
+            services:
+            - 172.20.0.0/16
+            {{- else }}
+            nodes:
+            - 10.128.0.0/9
+            pods:
+            - 10.2.0.0/16
+            services:
+            - 10.3.0.0/20
+            {{- end }}
+          provider:
+            region: {{ $region }}
+            zones:
+{{ range $zones }}
+            - {{ . }}
+{{ end }}
+          settings:
+            {{- if eq $provider "aws" }}
+            loadBalancerServices:
+              annotations:
+                service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+            {{- end }}
+            verticalPodAutoscaler:
+              enabled: true
+            topologyAwareRouting:
+              enabled: false
+        virtualCluster:
+          dns:
+            domains:
+            - name: virtual.{{ $dnsDomain }}
+              provider: primary
+          etcd:
+            main:
+              storage:
+                capacity: 25Gi
+            events:
+              storage:
+                capacity: 10Gi
+          kubernetes:
+            version: {{ $virtualGardenKubernetesVersion }}
+            kubeAPIServer:
+              autoscaling:
+                minAllowed:
+                  cpu: 200m
+                  memory: 512Mi
+          gardener:
+            clusterIdentity: allotment-{{ $provider }}
+            gardenerAPIServer:
+              admissionPlugins:
+              - name: ShootVPAEnabledByDefault
+            gardenerDashboard: {}
+            gardenerDiscoveryServer: {}
+            gardenerControllerManager: {}
+            gardenerScheduler: {}
+          maintenance:
+            timeWindow:
+              begin: 220000+0000
+              end: 230000+0000
+          networking:
+            services:
+            {{- if eq $provider "aws" }}
+            - 100.96.0.0/13
+            {{- else }}
+            - 100.64.0.0/13
+            {{- end }}
+  providerConfigRef:
+    name: runtime
+---
+# Extension CRs (operator.gardener.cloud/v1alpha1/Extension) are owned by
+# XGarden rather than a separate XR because their lifecycle is tightly
+# coupled with the Garden CR's own deletion DAG: the Extension admission
+# webhook blocks deletion while Garden requires its kinds (DNSRecord, etc.)
+# and the deletion flow needs the Gardener resource-manager CRDs that the
+# Garden DAG tears down near the end.
+#
+# All ext-* Objects use deletionPolicy: Orphan — on XGarden teardown we
+# release Crossplane's finalizer and leave the Extension CRs to be swept
+# when XInfra deletes the cloud cluster (all CRs die with the control plane).
+#
+# Extension: cloud infrastructure provider
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: ext-provider-{{ $provider }}
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: ext-provider-{{ $provider }}
+spec:
+  deletionPolicy: Orphan
+  forProvider:
+    manifest:
+      apiVersion: operator.gardener.cloud/v1alpha1
+      kind: Extension
+      metadata:
+        name: provider-{{ $provider }}
+      spec:
+        resources:
+        - kind: DNSRecord
+          type: {{ $dnsProviderType }}
+        - kind: Infrastructure
+          type: {{ $provider }}
+        - kind: ControlPlane
+          type: {{ $provider }}
+        - kind: Worker
+          type: {{ $provider }}
+        - kind: BackupBucket
+          type: {{ $provider }}
+        - kind: BackupEntry
+          type: {{ $provider }}
+        deployment:
+          admission:
+            values:
+              replicaCount: 1
+            runtimeCluster:
+              helm:
+                ociRepository:
+                  repository: europe-docker.pkg.dev/gardener-project/releases/charts/gardener/extensions/admission-{{ $provider }}-runtime
+                  tag: {{ $providerExtVersion }}
+            virtualCluster:
+              helm:
+                ociRepository:
+                  repository: europe-docker.pkg.dev/gardener-project/releases/charts/gardener/extensions/admission-{{ $provider }}-application
+                  tag: {{ $providerExtVersion }}
+          extension:
+            injectGardenKubeconfig: true
+            helm:
+              ociRepository:
+                repository: europe-docker.pkg.dev/gardener-project/releases/charts/gardener/extensions/provider-{{ $provider }}
+                tag: {{ $providerExtVersion }}
+            values:
+              replicaCount: 1
+  providerConfigRef:
+    name: runtime
+---
+# ClusterRoleBinding: extension namespace viewer — provider subjects
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: ext-namespace-viewer-binding
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: ext-namespace-viewer-binding
+spec:
+  deletionPolicy: Orphan
+  forProvider:
+    manifest:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: allotment-extension-namespace-viewer
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: allotment-extension-namespace-viewer
+      subjects:
+      - kind: ServiceAccount
+        name: gardener-extension-provider-{{ $provider }}
+        namespace: runtime-extension-provider-{{ $provider }}
+      - kind: ServiceAccount
+        name: gardener-extension-networking-calico
+        namespace: runtime-extension-net-calico
+      - kind: ServiceAccount
+        name: gardener-extension-shoot-cert-service
+        namespace: runtime-extension-extension-shoot-cert-service
+      - kind: ServiceAccount
+        name: gardener-extension-shoot-dns-service
+        namespace: runtime-extension-extension-shoot-dns-service
+  providerConfigRef:
+    name: runtime
+---
+# ClusterRole: extension namespace viewer
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: ext-namespace-viewer-role
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: ext-namespace-viewer
+spec:
+  deletionPolicy: Orphan
+  forProvider:
+    manifest:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: allotment-extension-namespace-viewer
+      rules:
+      - apiGroups: [""]
+        resources: ["namespaces"]
+        verbs: ["get", "list", "watch"]
+  providerConfigRef:
+    name: runtime
+---
+# Extension: Calico networking CNI
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: ext-net-calico
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: ext-net-calico
+spec:
+  deletionPolicy: Orphan
+  forProvider:
+    manifest:
+      apiVersion: operator.gardener.cloud/v1alpha1
+      kind: Extension
+      metadata:
+        name: net-calico
+      spec:
+        resources:
+        - kind: Network
+          type: calico
+        deployment:
+          admission:
+            values:
+              replicaCount: 1
+            runtimeCluster:
+              helm:
+                ociRepository:
+                  repository: europe-docker.pkg.dev/gardener-project/releases/charts/gardener/extensions/admission-calico-runtime
+                  tag: {{ index $env "calicoVersion" }}
+            virtualCluster:
+              helm:
+                ociRepository:
+                  repository: europe-docker.pkg.dev/gardener-project/releases/charts/gardener/extensions/admission-calico-application
+                  tag: {{ index $env "calicoVersion" }}
+          extension:
+            injectGardenKubeconfig: true
+            helm:
+              ociRepository:
+                repository: europe-docker.pkg.dev/gardener-project/releases/charts/gardener/extensions/networking-calico
+                tag: {{ index $env "calicoVersion" }}
+            values:
+              replicaCount: 1
+  providerConfigRef:
+    name: runtime
+---
+# Extension: Garden Linux OS
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: ext-os-gardenlinux
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: ext-os-gardenlinux
+spec:
+  deletionPolicy: Orphan
+  forProvider:
+    manifest:
+      apiVersion: operator.gardener.cloud/v1alpha1
+      kind: Extension
+      metadata:
+        name: os-gardenlinux
+      spec:
+        resources:
+        - kind: OperatingSystemConfig
+          type: gardenlinux
+        deployment:
+          extension:
+            policy: Always
+            injectGardenKubeconfig: true
+            helm:
+              ociRepository:
+                repository: europe-docker.pkg.dev/gardener-project/releases/charts/gardener/extensions/os-gardenlinux
+                tag: {{ index $env "gardenlinuxVersion" }}
+            values:
+              replicaCount: 1
+  providerConfigRef:
+    name: runtime
+---
+# Extension: Ubuntu OS
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: ext-os-ubuntu
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: ext-os-ubuntu
+spec:
+  deletionPolicy: Orphan
+  forProvider:
+    manifest:
+      apiVersion: operator.gardener.cloud/v1alpha1
+      kind: Extension
+      metadata:
+        name: os-ubuntu
+      spec:
+        resources:
+        - kind: OperatingSystemConfig
+          type: ubuntu
+        deployment:
+          extension:
+            policy: Always
+            injectGardenKubeconfig: true
+            helm:
+              ociRepository:
+                repository: europe-docker.pkg.dev/gardener-project/releases/charts/gardener/extensions/os-ubuntu
+                tag: {{ index $env "ubuntuVersion" }}
+            values:
+              replicaCount: 1
+  providerConfigRef:
+    name: runtime
+---
+# Extension: shoot certificate service
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: ext-shoot-cert-service
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: ext-shoot-cert
+spec:
+  deletionPolicy: Orphan
+  forProvider:
+    manifest:
+      apiVersion: operator.gardener.cloud/v1alpha1
+      kind: Extension
+      metadata:
+        name: extension-shoot-cert-service
+        annotations:
+          security.gardener.cloud/pod-security-enforce: baseline
+      spec:
+        deployment:
+          extension:
+            policy: Always
+            injectGardenKubeconfig: true
+            helm:
+              ociRepository:
+                repository: europe-docker.pkg.dev/gardener-project/releases/charts/gardener/extensions/shoot-cert-service
+                tag: {{ index $env "certServiceVersion" }}
+            values:
+              replicaCount: 1
+              certificateConfig:
+                defaultIssuer:
+                  name: default-issuer
+                  acme:
+                    email: noreply@gardener.cloud
+                    # Staging ACME — private DNS can't pass Let's Encrypt validation
+                    server: https://acme-staging-v02.api.letsencrypt.org/directory
+            runtimeClusterValues:
+              certificateConfig:
+                defaultIssuer:
+                  name: garden
+                  acme:
+                    email: noreply@gardener.cloud
+                    server: https://acme-staging-v02.api.letsencrypt.org/directory
+        resources:
+        - autoEnable:
+          - shoot
+          clusterCompatibility:
+          - shoot
+          kind: Extension
+          type: shoot-cert-service
+          workerlessSupported: true
+        - clusterCompatibility:
+          - garden
+          - seed
+          kind: Extension
+          lifecycle:
+            delete: AfterKubeAPIServer
+            reconcile: BeforeKubeAPIServer
+          type: controlplane-cert-service
+  providerConfigRef:
+    name: runtime
+---
+# Extension: shoot DNS service
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: ext-shoot-dns-service
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: ext-shoot-dns
+spec:
+  deletionPolicy: Orphan
+  forProvider:
+    manifest:
+      apiVersion: operator.gardener.cloud/v1alpha1
+      kind: Extension
+      metadata:
+        name: extension-shoot-dns-service
+        annotations:
+          security.gardener.cloud/pod-security-enforce: baseline
+      spec:
+        deployment:
+          admission:
+            values:
+              replicaCount: 1
+            runtimeCluster:
+              helm:
+                ociRepository:
+                  repository: europe-docker.pkg.dev/gardener-project/releases/charts/gardener/extensions/shoot-dns-service-admission-runtime
+                  tag: {{ index $env "dnsServiceVersion" }}
+            virtualCluster:
+              helm:
+                ociRepository:
+                  repository: europe-docker.pkg.dev/gardener-project/releases/charts/gardener/extensions/shoot-dns-service-admission-application
+                  tag: {{ index $env "dnsServiceVersion" }}
+          extension:
+            injectGardenKubeconfig: true
+            helm:
+              ociRepository:
+                repository: europe-docker.pkg.dev/gardener-project/releases/charts/gardener/extensions/shoot-dns-service
+                tag: {{ index $env "dnsServiceVersion" }}
+            values:
+              replicaCount: 1
+        resources:
+        - autoEnable:
+          - shoot
+          clusterCompatibility:
+          - shoot
+          kind: Extension
+          type: shoot-dns-service
+          workerlessSupported: true
+  providerConfigRef:
+    name: runtime
+{{- end }}

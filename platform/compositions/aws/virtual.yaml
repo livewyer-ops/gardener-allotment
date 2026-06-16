@@ -1,0 +1,102 @@
+# XVirtualGarden (AWS): Tenant resources on the virtual garden API.
+#
+# The virtual garden is Gardener's own API server (created by the Garden CR).
+# This composition creates resources ON that API via double-nested Objects:
+#   kind cluster → runtime cluster → virtual garden API
+#
+# Resources created:
+#   - CloudProfile: defines available machine types, OS images, and regions
+#     for shoot clusters (what users can choose when creating a shoot)
+#   - Project: a namespace-scoped container for shoots and credentials
+#   - CredentialsBindings: links AWS credentials to the project so shoots
+#     can provision infrastructure in the user's cloud account
+#   - Default-domain secret: enables automatic DNS for shoot API endpoints
+#   - Default shoot (eval): optional evaluation shoot cluster, controlled
+#     by the createShoot toggle in deploy/config.yaml
+#
+# The composed manifests live in platform/templates/virtual.tmpl, shared
+# with the GCP composition and branched on the `provider` key from the
+# allotment-config EnvironmentConfig.
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: virtual-aws
+  labels:
+    provider: aws
+spec:
+  compositeTypeRef:
+    apiVersion: allotment.io/v1alpha1
+    kind: XVirtualGarden
+  mode: Pipeline
+  pipeline:
+    - step: load-versions
+      functionRef:
+        name: function-environment-configs
+      input:
+        apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+        kind: Input
+        spec:
+          environmentConfigs:
+          - type: Reference
+            ref:
+              name: allotment-versions
+          - type: Reference
+            ref:
+              name: allotment-versions-aws
+          - type: Reference
+            ref:
+              name: allotment-config
+    # Deletion ordering only: this sequencer's creation-gating is inert (it
+    # runs before the resources are rendered); its enableDeletionSequencing
+    # generates the Usage chain that orders teardown.
+    - step: sequence
+      functionRef:
+        name: function-sequencer
+      input:
+        apiVersion: sequencer.fn.crossplane.io/v1beta1
+        kind: Input
+        rules:
+        - sequence:
+          - virtual-project
+          - virtual-(cloud-provider-secret|dns-secret|cloudprofile|credentials-.*)
+          - virtual-default-shoot
+        enableDeletionSequencing: true
+        replayDeletion: true
+
+    # Fetch bootstrap SA key + XInfra for go-templating
+    - step: fetch-extra-resources
+      functionRef:
+        name: function-extra-resources
+      input:
+        apiVersion: extra-resources.fn.crossplane.io/v1beta1
+        kind: Input
+        spec:
+          extraResources:
+            - kind: Secret
+              apiVersion: v1
+              into: sa-key
+              namespace: crossplane-system
+              type: Reference
+              ref:
+                name: gardener-sa-key
+            - kind: XInfra
+              apiVersion: allotment.io/v1alpha1
+              into: infra
+              type: Reference
+              ref:
+                name: garden-infra
+
+    # Provider resources: secrets, cloudprofile, credentials bindings,
+    # and default shoot
+    - step: create-provider-resources
+      functionRef:
+        name: function-go-templating
+      input:
+        apiVersion: gotemplating.fn.crossplane.io/v1beta1
+        kind: GoTemplate
+        source: FileSystem
+        fileSystem:
+          dirPath: /templates
+    - step: auto-ready
+      functionRef:
+        name: function-auto-ready

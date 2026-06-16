@@ -1,0 +1,20 @@
+# Allotment deployment configuration — copy to deploy/config.yaml and edit.
+# cp deploy/config-aws.yaml.example deploy/config.yaml
+apiVersion: apiextensions.crossplane.io/v1beta1
+kind: EnvironmentConfig
+metadata:
+  name: allotment-config
+data:
+  provider: aws
+  projectId: "123456789012"
+  region: eu-west-1
+  zones:
+    - eu-west-1a
+    - eu-west-1b
+  clusterName: allotment
+  createdBy: allotment
+  # expiresAt: "2026-06-30"
+  dnsDomain: allotment.garden.internal
+  awsProfile: default
+  awsGardenlinuxAmi: ami-032075382f7aac30e
+  createShoot: "false"

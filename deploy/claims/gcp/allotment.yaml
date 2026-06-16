@@ -1,0 +1,9 @@
+apiVersion: allotment.io/v1alpha1
+kind: XAllotment
+metadata:
+  name: garden
+spec:
+  crossplane:
+    compositionSelector:
+      matchLabels:
+        provider: gcp

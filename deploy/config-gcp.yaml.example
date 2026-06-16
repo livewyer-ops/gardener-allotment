@@ -1,0 +1,20 @@
+# Allotment deployment configuration — copy to deploy/config.yaml and edit.
+# cp deploy/config-gcp.yaml.example deploy/config.yaml
+apiVersion: apiextensions.crossplane.io/v1beta1
+kind: EnvironmentConfig
+metadata:
+  name: allotment-config
+data:
+  provider: gcp
+  projectId: your-gcp-project-id
+  region: europe-west1
+  zones:
+    - europe-west1-b
+    - europe-west1-c
+  clusterName: allotment
+  createdBy: allotment
+  # expiresAt: "2026-06-30"
+  dnsDomain: allotment.garden.internal
+  vpcNetwork: default
+  gcpNodesPerZone: 3
+  createShoot: "false"

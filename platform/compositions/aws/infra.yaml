@@ -217,87 +217,6 @@ spec:
           patchSetName: aws-common-tags
 
       # ──────────────────────────────────────────────────
-      # 8. Elastic IP for NAT Gateway
-      # ──────────────────────────────────────────────────
-      - name: eip
-        base:
-          apiVersion: ec2.aws.upbound.io/v1beta1
-          kind: EIP
-          spec:
-            forProvider:
-              domain: vpc
-              tags:
-                Name: REPLACE
-            providerConfigRef:
-              name: default
-        patches:
-        - type: FromEnvironmentFieldPath
-          fromFieldPath: region
-          toFieldPath: spec.forProvider.region
-        - type: CombineFromEnvironment
-          combine:
-            variables:
-            - fromFieldPath: clusterName
-            strategy: string
-            string:
-              fmt: '%s-nat-eip'
-          toFieldPath: metadata.name
-        - type: CombineFromEnvironment
-          combine:
-            variables:
-            - fromFieldPath: clusterName
-            strategy: string
-            string:
-              fmt: '%s-nat-eip'
-          toFieldPath: spec.forProvider.tags["Name"]
-        - type: PatchSet
-          patchSetName: aws-common-tags
-
-      # ──────────────────────────────────────────────────
-      # 9. NAT Gateway (in public subnet A)
-      # ──────────────────────────────────────────────────
-      - name: natgw
-        base:
-          apiVersion: ec2.aws.upbound.io/v1beta1
-          kind: NATGateway
-          spec:
-            forProvider:
-              connectivityType: public
-              allocationIdSelector:
-                matchControllerRef: true
-              subnetIdSelector:
-                matchControllerRef: true
-                matchLabels:
-                  access: public
-                  zone: a
-              tags:
-                Name: REPLACE
-            providerConfigRef:
-              name: default
-        patches:
-        - type: FromEnvironmentFieldPath
-          fromFieldPath: region
-          toFieldPath: spec.forProvider.region
-        - type: CombineFromEnvironment
-          combine:
-            variables:
-            - fromFieldPath: clusterName
-            strategy: string
-            string:
-              fmt: '%s-natgw'
-          toFieldPath: metadata.name
-        - type: CombineFromEnvironment
-          combine:
-            variables:
-            - fromFieldPath: clusterName
-            strategy: string
-            string:
-              fmt: '%s-natgw'
-          toFieldPath: spec.forProvider.tags["Name"]
-        - type: PatchSet
-          patchSetName: aws-common-tags
-
-      # ──────────────────────────────────────────────────
       # 10. Public Route Table
       # ──────────────────────────────────────────────────
       - name: rt-public
@@ -367,78 +286,6 @@ spec:
             strategy: string
             string:
               fmt: '%s-route-public'
-          toFieldPath: metadata.name
-
-      # ──────────────────────────────────────────────────
-      # 12. Private Route Table
-      # ──────────────────────────────────────────────────
-      - name: rt-private
-        base:
-          apiVersion: ec2.aws.upbound.io/v1beta1
-          kind: RouteTable
-          metadata:
-            labels:
-              route: private
-          spec:
-            forProvider:
-              vpcIdSelector:
-                matchControllerRef: true
-              tags:
-                Name: REPLACE
-            providerConfigRef:
-              name: default
-        patches:
-        - type: FromEnvironmentFieldPath
-          fromFieldPath: region
-          toFieldPath: spec.forProvider.region
-        - type: CombineFromEnvironment
-          combine:
-            variables:
-            - fromFieldPath: clusterName
-            strategy: string
-            string:
-              fmt: '%s-rt-private'
-          toFieldPath: metadata.name
-        - type: CombineFromEnvironment
-          combine:
-            variables:
-            - fromFieldPath: clusterName
-            strategy: string
-            string:
-              fmt: '%s-rt-private'
-          toFieldPath: spec.forProvider.tags["Name"]
-        - type: PatchSet
-          patchSetName: aws-common-tags
-
-      # ──────────────────────────────────────────────────
-      # 13. Private Default Route (via NAT Gateway)
-      # ──────────────────────────────────────────────────
-      - name: route-private
-        base:
-          apiVersion: ec2.aws.upbound.io/v1beta1
-          kind: Route
-          spec:
-            forProvider:
-              destinationCidrBlock: 0.0.0.0/0
-              natGatewayIdSelector:
-                matchControllerRef: true
-              routeTableIdSelector:
-                matchControllerRef: true
-                matchLabels:
-                  route: private
-            providerConfigRef:
-              name: default
-        patches:
-        - type: FromEnvironmentFieldPath
-          fromFieldPath: region
-          toFieldPath: spec.forProvider.region
-        - type: CombineFromEnvironment
-          combine:
-            variables:
-            - fromFieldPath: clusterName
-            strategy: string
-            string:
-              fmt: '%s-route-private'
           toFieldPath: metadata.name
 
       # ──────────────────────────────────────────────────
@@ -817,58 +664,6 @@ spec:
           toFieldPath: metadata.name
 
       # ──────────────────────────────────────────────────
-      # 28. EKS Managed Node Group
-      # ──────────────────────────────────────────────────
-      - name: eks-nodegroup
-        base:
-          apiVersion: eks.aws.upbound.io/v1beta2
-          kind: NodeGroup
-          spec:
-            forProvider:
-              clusterNameSelector:
-                matchControllerRef: true
-              nodeRoleArnSelector:
-                matchControllerRef: true
-                matchLabels:
-                  role: eks-node
-              subnetIdSelector:
-                matchControllerRef: true
-                matchLabels:
-                  access: private
-              instanceTypes:
-              - m5.xlarge
-              scalingConfig:
-                desiredSize: 4
-                minSize: 4
-                maxSize: 6
-              tags:
-                Name: REPLACE
-            providerConfigRef:
-              name: default
-        patches:
-        - type: FromEnvironmentFieldPath
-          fromFieldPath: region
-          toFieldPath: spec.forProvider.region
-        - type: CombineFromEnvironment
-          combine:
-            variables:
-            - fromFieldPath: clusterName
-            strategy: string
-            string:
-              fmt: '%s-nodegroup'
-          toFieldPath: metadata.name
-        - type: CombineFromEnvironment
-          combine:
-            variables:
-            - fromFieldPath: clusterName
-            strategy: string
-            string:
-              fmt: '%s-nodegroup'
-          toFieldPath: spec.forProvider.tags["Name"]
-        - type: PatchSet
-          patchSetName: aws-common-tags
-
-      # ──────────────────────────────────────────────────
       # 26. EKS ClusterAuth — generates kubeconfig with refreshed token
       # ──────────────────────────────────────────────────
       - name: eks-cluster-auth
@@ -1065,14 +860,16 @@ spec:
       apiVersion: sequencer.fn.crossplane.io/v1beta1
       kind: Input
       rules:
+      # Keep this deliberately narrow. Sequencing every VPC/network resource
+      # creates a dense ClusterUsage graph that exceeds Crossplane function
+      # gRPC limits once AWS zones are generated dynamically. AWS references
+      # and provider retries handle normal VPC dependency ordering; these
+      # rules only protect the runtime cluster while provider configs and
+      # runtime-applied resources still depend on it.
       - sequence:
-        - (vpc|eks-cluster-role|eks-node-role)
-        - (subnet-public-.*|subnet-private-.*|igw|eip|eks-cluster-policy|eks-node-.*policy|eks-cni-policy|eks-ecr-policy|vpc-secondary-cidr|vpc-shoot-cidr)
-        - (subnet-pod-.*|natgw|rt-.*|eks-cluster)
-        - (route-.*|rta-.*|eks-cluster-auth|oidc-provider|vpc-cni-addon)
-        - (ebs-csi-role|helm-providerconfig-runtime|k8s-providerconfig-runtime|k8s-providerconfig-infra)
-        - (ebs-csi-policy|eniconfig-.*|dns-zone)
-        - eks-nodegroup
-        - (eks-ebs-csi|pod-cidr-probe-.*)
+        - eks-cluster
+        - (eks-nodegroup|eks-cluster-auth|vpc-cni-addon|oidc-provider)
+        - (helm-providerconfig-runtime|k8s-providerconfig-runtime|k8s-providerconfig-infra|ebs-csi-role|ebs-csi-policy)
+        - (eniconfig-.*|pod-cidr-probe-.*|eks-ebs-csi|dns-zone)
       enableDeletionSequencing: true
       replayDeletion: true

@@ -4,6 +4,20 @@ All notable changes to this project are documented here. This project follows
 [Conventional Commits](https://www.conventionalcommits.org/) and
 [Semantic Versioning](https://semver.org/).
 
+## 1.1.0 — 2026-06-18
+
+Zone-count flexibility for runtime clusters.
+
+- Added provider-aware runtime zone validation: GCP accepts one or more zones,
+  AWS accepts two to four zones.
+- Changed GCP infrastructure rendering to pass the full configured zone list to
+  GKE `nodeLocations`.
+- Refactored AWS zone-shaped infrastructure to render from a four-slot table:
+  public, private, and pod subnets; per-zone NAT gateways; per-zone private route
+  tables; route associations; ENIConfigs; pod-CIDR probes; and node group sizing.
+- Added `awsNodesPerZone` for AWS runtime node sizing.
+- Extended render validation to exercise three-zone AWS and GCP configurations.
+
 ## 1.0.0 — 2026-06-16
 
 Initial public release.

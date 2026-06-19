@@ -110,7 +110,6 @@ tasks:
           command -v task >/dev/null 2>&1 || die "task not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
           task "$@"
         }
-
         command -v aws >/dev/null 2>&1 || die "aws not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
         AWS_PROFILE="{{.AWS_PROFILE}}" aws sts get-caller-identity >/dev/null \
           || die "AWS profile '{{.AWS_PROFILE}}' is not authenticated."
@@ -173,6 +172,31 @@ tasks:
 
         project="{{.PROJECT_ID}}"
         cluster="{{.CLUSTER_NAME}}"
+        add_project_binding() {
+          role="$1"
+          for attempt in $(seq 1 12); do
+            if gcloud projects add-iam-policy-binding "$project" \
+              --member="serviceAccount:${cluster}-bootstrap@${project}.iam.gserviceaccount.com" \
+              --role="$role" --condition=None --quiet >/dev/null; then
+              return 0
+            fi
+            sleep $((attempt * 2))
+          done
+          return 1
+        }
+        create_service_account_key() {
+          for attempt in $(seq 1 12); do
+            if gcloud iam service-accounts keys create private/gcp-credentials.json \
+              --iam-account="${cluster}-bootstrap@${project}.iam.gserviceaccount.com" \
+              --project="$project"; then
+              return 0
+            fi
+            rm -f private/gcp-credentials.json
+            sleep $((attempt * 2))
+          done
+          return 1
+        }
+
         for api in iam compute container dns storage cloudresourcemanager serviceusage; do
           gcloud services enable "${api}.googleapis.com" --project "$project" >/dev/null
         done
@@ -193,14 +217,12 @@ tasks:
           roles/iam.serviceAccountUser \
           roles/resourcemanager.projectIamAdmin \
           roles/serviceusage.serviceUsageAdmin; do
-          gcloud projects add-iam-policy-binding "$project" \
-            --member="serviceAccount:${cluster}-bootstrap@${project}.iam.gserviceaccount.com" \
-            --role="$role" --condition=None --quiet >/dev/null
+          add_project_binding "$role" \
+            || die "failed to grant $role to ${cluster}-bootstrap@${project}.iam.gserviceaccount.com."
         done
 
-        gcloud iam service-accounts keys create private/gcp-credentials.json \
-          --iam-account="${cluster}-bootstrap@${project}.iam.gserviceaccount.com" \
-          --project="$project"
+        create_service_account_key \
+          || die "failed to create service account key for ${cluster}-bootstrap@${project}.iam.gserviceaccount.com."
         chmod 600 private/gcp-credentials.json
         echo "Wrote private/gcp-credentials.json."
 

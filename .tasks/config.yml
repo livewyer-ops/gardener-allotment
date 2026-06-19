@@ -48,11 +48,32 @@ tasks:
           *) die "region '$region' does not look like a cloud region." ;;
         esac
 
-        zone_count="$(yq_eval '.data.zones | length')"
-        [ "$zone_count" = "2" ] || die "zones must contain exactly two zones for the selected region."
-        for index in 0 1; do
+        zones_type="$(yq_eval '(.data.zones // []) | type')"
+        [ "$zones_type" = "!!seq" ] || die "zones must be a list."
+        zone_count="$(yq_eval '.data.zones // [] | length')"
+        case "$zone_count" in
+          '' | *[!0-9]*) die "zones must be a list." ;;
+        esac
+        case "$provider" in
+          aws)
+            [ "$zone_count" -ge 2 ] && [ "$zone_count" -le 4 ] \
+              || die "AWS zones must contain 2 to 4 zones in the selected region."
+            ;;
+          gcp)
+            [ "$zone_count" -ge 1 ] \
+              || die "GCP zones must contain at least one zone in the selected region."
+            ;;
+        esac
+
+        seen_zones=""
+        index=0
+        while [ "$index" -lt "$zone_count" ]; do
           zone="$(yq_eval ".data.zones[$index] // \"\"")"
           [ -n "$zone" ] || die "zones[$index] not set in deploy/config.yaml."
+          case " $seen_zones " in
+            *" $zone "*) die "duplicate zone '$zone' in deploy/config.yaml." ;;
+          esac
+          seen_zones="${seen_zones} ${zone}"
           case "$provider" in
             aws)
               case "$zone" in
@@ -67,9 +88,17 @@ tasks:
               esac
               ;;
           esac
+          index=$((index + 1))
         done
 
         if [ "$provider" = "aws" ]; then
+          aws_nodes_per_zone="$(yq_eval '.data.awsNodesPerZone // ""')"
+          if [ -n "$aws_nodes_per_zone" ]; then
+            case "$aws_nodes_per_zone" in
+              *[!0-9]*) die "awsNodesPerZone must be a positive integer." ;;
+              0) die "awsNodesPerZone must be greater than zero." ;;
+            esac
+          fi
           aws_gardenlinux_ami="$(yq_eval '.data.awsGardenlinuxAmi // ""')"
           case "$aws_gardenlinux_ami" in
             ami-*) ;;

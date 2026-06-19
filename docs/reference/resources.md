@@ -77,16 +77,17 @@ AWS: `load-versions → render-zone-resources → patch-and-transform → auto-r
 The connection secret propagates the runtime kubeconfig as `runtime-connection`
 in `crossplane-system`.
 
-- **AWS (~37 MRs)**: VPC (`10.0.0.0/16`) + secondary CIDRs (`100.64.0.0/16` pods,
-  `10.250.0.0/16` shoots), public/private/pod subnets (2 AZs), IGW, NAT gateway,
-  EIP, route tables, EKS cluster + node group, IAM roles (cluster, node, EBS CSI),
-  OIDC provider, EBS CSI add-on, VPC CNI add-on with custom networking, ENIConfigs,
-  pod-CIDR probe Jobs, Route 53 private zone, Helm + K8s ProviderConfigs. Singleton
-  resources live in `compositions/aws/infra.yaml`; repeated two-zone resources
-  (subnets, RTAs, ENIConfigs, probes) render from `platform/templates/infra-aws.tmpl`.
-- **GCP (~6 MRs)**: regional GKE cluster (`gcpNodesPerZone: 3` × 2 zones = 6
-  `e2-standard-4` nodes), Cloud DNS private zone, Cloud Router (shoot NAT), GCP +
-  Helm + K8s ProviderConfigs.
+- **AWS (~48 MRs at two zones, +12 per additional zone)**: VPC
+  (`10.0.0.0/16`) + secondary CIDRs (`100.64.0.0/16` pods,
+  `10.250.0.0/16` shoots), public/private/pod subnets, per-zone NAT gateways,
+  per-zone private route tables, IGW, EKS cluster + node group, IAM roles
+  (cluster, node, EBS CSI), OIDC provider, EBS CSI add-on, VPC CNI add-on with
+  custom networking, ENIConfigs, pod-CIDR probe Jobs, Route 53 private zone, Helm
+  + K8s ProviderConfigs. Singleton resources live in `compositions/aws/infra.yaml`;
+  zone-shaped resources render from `platform/templates/infra-aws.tmpl`.
+- **GCP (~6 MRs)**: regional GKE cluster (`gcpNodesPerZone` × configured zones,
+  default three `e2-standard-8` nodes per zone), Cloud DNS private zone, Cloud
+  Router (shoot NAT), GCP + Helm + K8s ProviderConfigs.
 
 ### Workload (`workload-{provider}`)
 

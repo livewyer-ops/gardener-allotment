@@ -1,4 +1,5 @@
 {{- if eq .observed.composite.resource.kind "XInfra" }}
+{{- $root := . }}
 {{- $envKey := "apiextensions.crossplane.io/environment" }}
 {{- $env := index .context $envKey }}
 {{- $provider := index $env "provider" }}
@@ -8,14 +9,35 @@
 {{- $zones := index $env "zones" }}
 {{- $createdBy := default "allotment" (index $env "createdBy") }}
 {{- $expiresAt := default "" (index $env "expiresAt") }}
+{{- $awsNodesPerZone := int (default 2 (index $env "awsNodesPerZone")) }}
+{{- $desiredNodes := mul (len $zones) $awsNodesPerZone }}
+{{- $maxNodes := add $desiredNodes (len $zones) }}
 {{- $xrStatus := dig "status" (dict) .observed.composite.resource }}
-{{- $podSubnetA := default (dig "podSubnetA" "" $xrStatus) (dig "resources" "subnet-pod-a" "resource" "status" "atProvider" "id" "" .observed) }}
-{{- $podSubnetB := default (dig "podSubnetB" "" $xrStatus) (dig "resources" "subnet-pod-b" "resource" "status" "atProvider" "id" "" .observed) }}
+{{- $podSubnets := default (dict) (dig "podSubnets" (dict) $xrStatus) }}
 {{- $clusterSecurityGroup := default "REPLACE" (dig "clusterSecurityGroup" "" $xrStatus) }}
-{{- $zoneData := list
-  (dict "suffix" "a" "zone" (index $zones 0) "publicCidr" "10.0.0.0/19" "privateCidr" "10.0.64.0/19" "podCidr" "100.64.0.0/19" "podSubnetId" (default "REPLACE" $podSubnetA))
-  (dict "suffix" "b" "zone" (index $zones 1) "publicCidr" "10.0.32.0/19" "privateCidr" "10.0.96.0/19" "podCidr" "100.64.32.0/19" "podSubnetId" (default "REPLACE" $podSubnetB))
+{{- $zoneSlots := list
+  (dict "suffix" "a" "publicCidr" "10.0.0.0/19" "privateCidr" "10.0.128.0/19" "podCidr" "100.64.0.0/19")
+  (dict "suffix" "b" "publicCidr" "10.0.32.0/19" "privateCidr" "10.0.160.0/19" "podCidr" "100.64.32.0/19")
+  (dict "suffix" "c" "publicCidr" "10.0.64.0/19" "privateCidr" "10.0.192.0/19" "podCidr" "100.64.64.0/19")
+  (dict "suffix" "d" "publicCidr" "10.0.96.0/19" "privateCidr" "10.0.224.0/19" "podCidr" "100.64.96.0/19")
 }}
+{{- $zoneData := list }}
+{{- range $i, $zoneName := $zones }}
+{{- $slot := index $zoneSlots $i }}
+{{- $suffix := index $slot "suffix" }}
+{{- $podResourceName := printf "subnet-pod-%s" $suffix }}
+{{- $observedPodSubnet := dig "resources" $podResourceName "resource" "status" "atProvider" "id" "" $root.observed }}
+{{- $statusPodSubnet := get $podSubnets $suffix }}
+{{- $podSubnetId := default $statusPodSubnet $observedPodSubnet }}
+{{- $zoneData = append $zoneData (dict
+  "suffix" $suffix
+  "zone" $zoneName
+  "publicCidr" (index $slot "publicCidr")
+  "privateCidr" (index $slot "privateCidr")
+  "podCidr" (index $slot "podCidr")
+  "podSubnetId" $podSubnetId
+) }}
+{{- end }}
 {{- $subnetTypes := list
   (dict "access" "public" "cidrKey" "publicCidr" "mapPublicIp" "true" "roleTag" "kubernetes.io/role/elb")
   (dict "access" "private" "cidrKey" "privateCidr" "mapPublicIp" "" "roleTag" "kubernetes.io/role/internal-elb")
@@ -65,17 +87,128 @@ spec:
     name: default
 {{- end }}
 {{- end }}
-{{- if or $podSubnetA $podSubnetB }}
+{{- range $zone := $zoneData }}
+{{- $suffix := index $zone "suffix" }}
+---
+apiVersion: ec2.aws.upbound.io/v1beta1
+kind: EIP
+metadata:
+  name: {{ printf "%s-nat-eip-%s" $clusterName $suffix | quote }}
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: eip-{{ $suffix }}
+  labels:
+    nat-zone: {{ $suffix }}
+spec:
+  forProvider:
+    region: {{ $region | quote }}
+    domain: vpc
+    tags:
+      Name: {{ printf "%s-nat-eip-%s" $clusterName $suffix | quote }}
+      allotment.cluster: {{ $clusterName | quote }}
+      allotment.provider: "aws"
+      allotment.created-by: {{ $createdBy | quote }}
+      {{ if ne $expiresAt "" }}
+      allotment.expires-at: {{ $expiresAt | quote }}
+      {{ end }}
+  providerConfigRef:
+    name: default
+---
+apiVersion: ec2.aws.upbound.io/v1beta1
+kind: NATGateway
+metadata:
+  name: {{ printf "%s-natgw-%s" $clusterName $suffix | quote }}
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: natgw-{{ $suffix }}
+  labels:
+    nat-zone: {{ $suffix }}
+spec:
+  forProvider:
+    region: {{ $region | quote }}
+    connectivityType: public
+    allocationIdSelector:
+      matchControllerRef: true
+      matchLabels:
+        nat-zone: {{ $suffix }}
+    subnetIdSelector:
+      matchControllerRef: true
+      matchLabels:
+        access: public
+        zone: {{ $suffix }}
+    tags:
+      Name: {{ printf "%s-natgw-%s" $clusterName $suffix | quote }}
+      allotment.cluster: {{ $clusterName | quote }}
+      allotment.provider: "aws"
+      allotment.created-by: {{ $createdBy | quote }}
+      {{ if ne $expiresAt "" }}
+      allotment.expires-at: {{ $expiresAt | quote }}
+      {{ end }}
+  providerConfigRef:
+    name: default
+---
+apiVersion: ec2.aws.upbound.io/v1beta1
+kind: RouteTable
+metadata:
+  name: {{ printf "%s-rt-private-%s" $clusterName $suffix | quote }}
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: rt-private-{{ $suffix }}
+  labels:
+    route: private
+    zone: {{ $suffix }}
+spec:
+  forProvider:
+    region: {{ $region | quote }}
+    vpcIdSelector:
+      matchControllerRef: true
+    tags:
+      Name: {{ printf "%s-rt-private-%s" $clusterName $suffix | quote }}
+      allotment.cluster: {{ $clusterName | quote }}
+      allotment.provider: "aws"
+      allotment.created-by: {{ $createdBy | quote }}
+      {{ if ne $expiresAt "" }}
+      allotment.expires-at: {{ $expiresAt | quote }}
+      {{ end }}
+  providerConfigRef:
+    name: default
+---
+apiVersion: ec2.aws.upbound.io/v1beta1
+kind: Route
+metadata:
+  name: {{ printf "%s-route-private-%s" $clusterName $suffix | quote }}
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: route-private-{{ $suffix }}
+spec:
+  forProvider:
+    region: {{ $region | quote }}
+    destinationCidrBlock: 0.0.0.0/0
+    natGatewayIdSelector:
+      matchControllerRef: true
+      matchLabels:
+        nat-zone: {{ $suffix }}
+    routeTableIdSelector:
+      matchControllerRef: true
+      matchLabels:
+        route: private
+        zone: {{ $suffix }}
+  providerConfigRef:
+    name: default
+{{- end }}
+{{- $hasPodSubnet := false }}
+{{- range $zone := $zoneData }}
+{{- if ne (index $zone "podSubnetId") "" }}
+{{- $hasPodSubnet = true }}
+{{- end }}
+{{- end }}
+{{- if $hasPodSubnet }}
 ---
 apiVersion: allotment.io/v1alpha1
 kind: XInfra
 status:
-  {{ if $podSubnetA }}
-  podSubnetA: {{ $podSubnetA | quote }}
-  {{ end }}
-  {{ if $podSubnetB }}
-  podSubnetB: {{ $podSubnetB | quote }}
-  {{ end }}
+  podSubnets:
+{{- range $zone := $zoneData }}
+{{- if ne (index $zone "podSubnetId") "" }}
+    {{ index $zone "suffix" }}: {{ index $zone "podSubnetId" | quote }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- $routeAssociations := list
   (dict "access" "public" "route" "public")
@@ -84,6 +217,7 @@ status:
 }}
 {{- range $association := $routeAssociations }}
 {{- $access := index $association "access" }}
+{{- $route := index $association "route" }}
 {{- range $zone := $zoneData }}
 {{- $suffix := index $zone "suffix" }}
 ---
@@ -99,7 +233,10 @@ spec:
     routeTableIdSelector:
       matchControllerRef: true
       matchLabels:
-        route: {{ index $association "route" }}
+        route: {{ $route }}
+        {{ if eq $route "private" }}
+        zone: {{ $suffix }}
+        {{ end }}
     subnetIdSelector:
       matchControllerRef: true
       matchLabels:
@@ -109,6 +246,42 @@ spec:
     name: default
 {{- end }}
 {{- end }}
+---
+apiVersion: eks.aws.upbound.io/v1beta2
+kind: NodeGroup
+metadata:
+  name: {{ printf "%s-nodegroup" $clusterName | quote }}
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: eks-nodegroup
+spec:
+  forProvider:
+    region: {{ $region | quote }}
+    clusterNameSelector:
+      matchControllerRef: true
+    nodeRoleArnSelector:
+      matchControllerRef: true
+      matchLabels:
+        role: eks-node
+    subnetIdSelector:
+      matchControllerRef: true
+      matchLabels:
+        access: private
+    instanceTypes:
+    - m5.xlarge
+    scalingConfig:
+      desiredSize: {{ $desiredNodes }}
+      minSize: {{ $desiredNodes }}
+      maxSize: {{ $maxNodes }}
+    tags:
+      Name: {{ printf "%s-nodegroup" $clusterName | quote }}
+      allotment.cluster: {{ $clusterName | quote }}
+      allotment.provider: "aws"
+      allotment.created-by: {{ $createdBy | quote }}
+      {{ if ne $expiresAt "" }}
+      allotment.expires-at: {{ $expiresAt | quote }}
+      {{ end }}
+  providerConfigRef:
+    name: default
 {{- range $zone := $zoneData }}
 {{- $suffix := index $zone "suffix" }}
 {{- $zoneName := index $zone "zone" }}
@@ -130,7 +303,7 @@ spec:
       spec:
         securityGroups:
         - {{ $clusterSecurityGroup | quote }}
-        subnet: {{ index $zone "podSubnetId" | quote }}
+        subnet: {{ default "REPLACE" (index $zone "podSubnetId") | quote }}
   providerConfigRef:
     name: runtime-infra
 ---

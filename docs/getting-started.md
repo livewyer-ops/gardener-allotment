@@ -77,7 +77,8 @@ Edit `deploy/config.yaml`. The most important fields are:
 - `provider`: `gcp` or `aws`
 - `projectId`: GCP project ID or AWS account ID
 - `region`: cloud region
-- `zones`: exactly two runtime zones in that region
+- `zones`: runtime zones in that region; GCP accepts one or more, AWS accepts
+  two to four
 - `dnsDomain`: private evaluation domain
 - `createShoot`: `"false"` for only the landscape, `"true"` to also create a
   default shoot

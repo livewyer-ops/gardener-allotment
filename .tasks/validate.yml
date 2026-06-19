@@ -94,8 +94,16 @@ tasks:
           cp "deploy/config-${provider}.yaml.example" "$tmp/$provider/required/allotment-config.yaml"
           tool yq -i '.data.createShoot = "true"' "$tmp/$provider/required/allotment-config.yaml"
           case "$provider" in
-            aws) tool yq -i '.data.projectId = "999999999999"' "$tmp/$provider/required/allotment-config.yaml" ;;
-            gcp) tool yq -i '.data.projectId = "allotment-render"' "$tmp/$provider/required/allotment-config.yaml" ;;
+            aws)
+              tool yq -i '.data.projectId = "999999999999" |
+                .data.zones = ["eu-west-1a", "eu-west-1b", "eu-west-1c"]' \
+                "$tmp/$provider/required/allotment-config.yaml"
+              ;;
+            gcp)
+              tool yq -i '.data.projectId = "allotment-render" |
+                .data.zones = ["europe-west1-b", "europe-west1-c", "europe-west1-d"]' \
+                "$tmp/$provider/required/allotment-config.yaml"
+              ;;
           esac
           cp platform/configs/*.yaml "$tmp/$provider/required/"
           cat >"$tmp/$provider/required/gardener-sa-key.yaml" <<'EOF'
@@ -185,6 +193,20 @@ tasks:
           fi
           if [ "$provider" = "aws" ] && [ "$component" != "infra" ] && grep -q 'REPLACE' "$render"; then
             die "rendered ${provider}/${component} retained unexpected REPLACE placeholder"
+          fi
+          if [ "$provider" = "gcp" ] && [ "$component" = "infra" ]; then
+            expected_locations="$(tool yq -r '.data.zones[]' "$tmp/$provider/required/allotment-config.yaml" | sort | paste -sd ',' -)"
+            actual_locations="$(tool yq -r 'select(.apiVersion == "container.gcp.upbound.io/v1beta2" and .kind == "Cluster") | .spec.forProvider.nodeLocations[]' "$render" | sort | paste -sd ',' -)"
+            [ "$actual_locations" = "$expected_locations" ] \
+              || die "rendered gcp/infra nodeLocations '$actual_locations' did not match config zones '$expected_locations'"
+          fi
+          if [ "$provider" = "aws" ] && [ "$component" = "infra" ]; then
+            zone_count="$(tool yq -r '.data.zones | length' "$tmp/$provider/required/allotment-config.yaml")"
+            nodes_per_zone="$(tool yq -r '.data.awsNodesPerZone // 2' "$tmp/$provider/required/allotment-config.yaml")"
+            expected_nodes=$((zone_count * nodes_per_zone))
+            actual_nodes="$(tool yq -r 'select(.apiVersion == "eks.aws.upbound.io/v1beta2" and .kind == "NodeGroup") | .spec.forProvider.scalingConfig.desiredSize' "$render")"
+            [ "$actual_nodes" = "$expected_nodes" ] \
+              || die "rendered aws/infra desired node count '$actual_nodes' did not equal zones × awsNodesPerZone '$expected_nodes'"
           fi
 
           echo "Rendered ${provider}/${component}"

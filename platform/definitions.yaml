@@ -75,10 +75,10 @@ spec:
                   type: string
                 accountId:
                   type: string
-                podSubnetA:
-                  type: string
-                podSubnetB:
-                  type: string
+                podSubnets:
+                  type: object
+                  additionalProperties:
+                    type: string
                 clusterSecurityGroup:
                   type: string
 ---

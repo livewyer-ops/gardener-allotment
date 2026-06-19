@@ -83,7 +83,7 @@ cp deploy/config-aws.yaml.example deploy/config.yaml   # AWS
 
 The config is a Crossplane `EnvironmentConfig`. The example files are the
 canonical, commented templates — copy one and edit the provider, `projectId`,
-`region`, the two `zones`, and `dnsDomain`. [Getting Started](docs/getting-started.md#choose-a-provider)
+`region`, `zones`, and `dnsDomain`. [Getting Started](docs/getting-started.md#choose-a-provider)
 explains each field.
 
 `task bootstrap-identity` is an evaluation helper: it creates a disposable cloud
@@ -163,8 +163,10 @@ recovery steps, see [docs/how-to/troubleshoot-and-recover.md](docs/how-to/troubl
 
 This is an **evaluation sandbox**, not production infrastructure:
 
-- **GCP** and **AWS** supported; single region, two configured runtime zones
-- **~$5-10/day** cloud cost (seed cluster); shoots add ~$3-5/day each
+- **GCP** and **AWS** supported; single region with provider-specific runtime
+  zone counts (GCP one or more, AWS two to four)
+- Cloud cost varies by provider and zone count; AWS creates one NAT gateway per
+  configured runtime zone, and shoots add their own resources
 - Private DNS only (no domain ownership needed)
 - Shoots share the seed VPC for private DNS resolution (GCP via Cloud Router, AWS via secondary CIDR)
 - Staging TLS certificates (browser warnings)

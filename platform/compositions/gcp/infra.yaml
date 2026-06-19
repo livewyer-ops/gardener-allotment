@@ -91,15 +91,24 @@ spec:
             fromFieldPath: Optional
       resources:
       - name: gke-cluster
+        readinessChecks:
+        - type: NonEmpty
+          fieldPath: status.atProvider.controlPlaneEndpointsConfig.dnsEndpointConfig.endpoint
+        - type: NonEmpty
+          fieldPath: status.atProvider.masterAuth.clusterCaCertificate
         base:
           apiVersion: container.gcp.upbound.io/v1beta2
           kind: Cluster
           spec:
+            initProvider:
+              # Create-time only: GKE reports these back as secondary range names,
+              # so enforcing the raw CIDRs after create causes replacement drift.
+              ipAllocationPolicy:
+                clusterIpv4CidrBlock: 10.2.0.0/16
+                servicesIpv4CidrBlock: 10.3.0.0/20
             forProvider:
               initialNodeCount: 3
-              nodeLocations:
-              - REPLACE
-              - REPLACE
+              nodeLocations: []
               minMasterVersion: REPLACE
               nodeConfig:
                 # e2-standard-8 (not -4): the colocated garden+seed runtime packs
@@ -116,19 +125,17 @@ spec:
               # Workload Identity required for Crossplane identity-based auth on GKE
               workloadIdentityConfig:
                 workloadPool: REPLACE
-              # Pin pod/service CIDRs to match Garden CRD and Gardenlet seed config
-              ipAllocationPolicy:
-                clusterIpv4CidrBlock: 10.2.0.0/16
-                servicesIpv4CidrBlock: 10.3.0.0/20
+              controlPlaneEndpointsConfig:
+                dnsEndpointConfig:
+                  allowExternalTraffic: true
+                ipEndpointsConfig:
+                  enabled: true
               loggingService: logging.googleapis.com/kubernetes
               monitoringService: monitoring.googleapis.com/kubernetes
               # Must be false for clean teardown
               deletionProtection: false
             providerConfigRef:
               name: default
-            writeConnectionSecretToRef:
-              name: runtime-connection
-              namespace: crossplane-system
         patches:
         - type: FromEnvironmentFieldPath
           fromFieldPath: projectId
@@ -158,11 +165,8 @@ spec:
               fmt: '%s.svc.id.goog'
           toFieldPath: spec.forProvider.workloadIdentityConfig.workloadPool
         - type: FromEnvironmentFieldPath
-          fromFieldPath: zones[0]
-          toFieldPath: spec.forProvider.nodeLocations[0]
-        - type: FromEnvironmentFieldPath
-          fromFieldPath: zones[1]
-          toFieldPath: spec.forProvider.nodeLocations[1]
+          fromFieldPath: zones
+          toFieldPath: spec.forProvider.nodeLocations
       - name: helm-providerconfig-runtime
         readinessChecks:
         - type: None
@@ -281,6 +285,15 @@ spec:
             string:
               fmt: '%s-cloud-router'
           toFieldPath: metadata.name
+  - step: render-runtime-connection
+    functionRef:
+      name: function-go-templating
+    input:
+      apiVersion: gotemplating.fn.crossplane.io/v1beta1
+      kind: GoTemplate
+      source: FileSystem
+      fileSystem:
+        dirPath: /templates
   - step: auto-ready
     functionRef:
       name: function-auto-ready

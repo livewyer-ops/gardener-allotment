@@ -1,0 +1,31 @@
+{{- if eq .observed.composite.resource.kind "XInfra" }}
+{{- $envKey := "apiextensions.crossplane.io/environment" }}
+{{- $env := index .context $envKey }}
+{{- $provider := index $env "provider" }}
+{{- if eq $provider "gcp" }}
+{{- $clusterName := index $env "clusterName" }}
+{{- $cluster := dig "resources" "gke-cluster" "resource" "status" "atProvider" (dict) .observed }}
+{{- $dnsEndpoint := dig "controlPlaneEndpointsConfig" "dnsEndpointConfig" "endpoint" "" $cluster }}
+{{- $legacyEndpoint := dig "endpoint" "" $cluster }}
+{{- $endpoint := default $dnsEndpoint $legacyEndpoint }}
+{{- $caData := dig "masterAuth" "clusterCaCertificate" "" $cluster }}
+{{- if and (ne $endpoint "") (ne $caData "") }}
+{{- $server := $endpoint }}
+{{- if not (hasPrefix "https://" $server) }}
+{{- $server = printf "https://%s" $server }}
+{{- end }}
+{{- $kubeconfig := printf "apiVersion: v1\nclusters:\n- cluster:\n    certificate-authority-data: %s\n    server: %s\n  name: %s\ncontexts:\n- context:\n    cluster: %s\n    user: %s\n  name: %s\ncurrent-context: %s\nkind: Config\nusers:\n- name: %s\n  user: {}\n" $caData $server $clusterName $clusterName $clusterName $clusterName $clusterName $clusterName }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: runtime-connection
+  namespace: crossplane-system
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: runtime-connection
+type: Opaque
+data:
+  kubeconfig: {{ $kubeconfig | b64enc | quote }}
+{{- end }}
+{{- end }}
+{{- end }}

@@ -8,6 +8,8 @@ data:
   provider: gcp
   projectId: your-gcp-project-id
   region: europe-west1
+  # GCP supports one or more runtime zones. Total runtime nodes are
+  # gcpNodesPerZone × number of zones.
   zones:
     - europe-west1-b
     - europe-west1-c

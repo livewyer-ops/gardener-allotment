@@ -16,7 +16,7 @@ live in `task help` so they cannot drift.
 
 **Run**
 
-- `install` — full deployment (~25 min, +15 min with `createShoot`)
+- `install` — full deployment (~25 min landscape, +15 min with `createShoot`)
 - `status` — claim, child XRs, managed resources, recent warnings
 - `validate-live` — Chainsaw post-install checks against the control-plane and runtime clusters
 - `observability` — runtime readiness, API metrics, Garden pods, warning events
@@ -29,7 +29,7 @@ live in `task help` so they cannot drift.
 
 **Tear down**
 
-- `teardown` — `kubectl delete xallotment --cascade=foreground`; ClusterUsages cascade through every child in order (~15 min)
+- `teardown` — `kubectl delete xallotment --cascade=foreground`; ClusterUsages cascade through every child in order (~30 min on GCP, ~15-20 min on AWS)
 - `deauth` — remove cloud credentials (guarded: refuses while resources exist)
 - `verify-clean` — read-only audit for likely cloud leftovers
 - `clean-private` — remove generated logs and kubeconfigs, keep credentials

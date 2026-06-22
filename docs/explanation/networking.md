@@ -43,10 +43,11 @@ secondary-CIDR machinery. The total runtime node count is
 
 On EKS the VPC CNI assigns pod IPs from the node's subnet by default, which would
 overlap the node CIDR. To give pods a non-overlapping CIDR, Allotment uses VPC CNI
-**custom networking** with a secondary CIDR — the AWS-recommended pattern. (An
-overlay CNI such as Cilium or Calico on the seed is a possible alternative that
-would decouple pod IPs from the VPC and remove the secondary CIDR, ENIConfigs,
-and probes.)
+**custom networking** with a secondary CIDR, following the AWS-documented pattern
+for [deploying pods in alternate subnets](https://docs.aws.amazon.com/eks/latest/userguide/cni-custom-network.html).
+An overlay CNI such as Cilium or Calico on the seed is a possible alternative
+that would decouple pod IPs from the VPC and remove the secondary CIDR,
+ENIConfigs, and probes.
 
 ### AWS runtime zone slots
 
@@ -67,11 +68,11 @@ subnets come from `10.0.128.0/17`; pod subnets come from the secondary
 `100.64.0.0/16` block.
 
 AWS renders one NAT gateway and one private route table per configured zone, so
-private and pod subnets use same-zone egress. This is more expensive than a
-single NAT gateway, but it is the right multi-AZ failure-domain model for a
-best-practice evaluation. The managed node group scales from `awsNodesPerZone`;
-with the default `2`, desired and minimum size are `2 × len(zones)` and maximum
-size adds one surge node per zone.
+private and pod subnets use same-zone egress. This costs more than a single NAT
+gateway, but it keeps the evaluation aligned with the configured availability
+zones instead of routing every private subnet through one zone. The managed node
+group scales from `awsNodesPerZone`; with the default `2`, desired and minimum
+size are `2 × len(zones)` and maximum size adds one surge node per zone.
 
 ### The AWS pod-CIDR gate
 

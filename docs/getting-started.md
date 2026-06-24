@@ -75,7 +75,7 @@ cp deploy/config-aws.yaml.example deploy/config.yaml
 Edit `deploy/config.yaml`. The most important fields are:
 
 - `provider`: `gcp` or `aws`
-- `projectId`: GCP project ID or AWS account ID
+- `projectId`: GCP project ID or AWS 12-digit account ID, without dashes
 - `region`: cloud region
 - `zones`: runtime zones in that region; GCP accepts one or more, AWS accepts
   two to four
@@ -83,8 +83,34 @@ Edit `deploy/config.yaml`. The most important fields are:
 - `createShoot`: `"false"` for only the landscape, `"true"` to also create a
   default shoot
 
+List zones before editing the file:
+
+```bash
+gcloud compute zones list --filter='region:europe-west1' --format='value(name)'
+aws ec2 describe-availability-zones --region eu-west-1 \
+  --query 'AvailabilityZones[].ZoneName' --output text
+```
+
+GCP zone names are regional, but a valid zone can still be temporarily short on
+capacity. AWS zone names are account-mapped, so use the names returned for the
+account that will run the evaluation.
+
 GCP also needs `vpcNetwork`. AWS also needs `awsProfile` and a Garden Linux AMI
-for the selected region.
+for the selected region. Garden Linux is the operating system name.
+
+## Plan The Cloud Footprint
+
+The defaults create real resources:
+
+- GCP creates a regional GKE runtime cluster with `gcpNodesPerZone × len(zones)`
+  `e2-standard-8` nodes.
+- AWS creates an EKS runtime cluster with `awsNodesPerZone × len(zones)`
+  `m5.xlarge` nodes, plus one NAT gateway per configured runtime zone.
+- Setting `createShoot: "true"` adds a Gardener-managed shoot cluster after the
+  landscape is ready.
+
+Use a dedicated account or project, and tear it down when the evaluation is
+finished.
 
 ## Create Or Load Credentials
 
@@ -94,10 +120,18 @@ For a disposable evaluation identity:
 task bootstrap-identity
 ```
 
-This writes credentials under `private/`, which is gitignored. If you already
-have suitable credentials, place them under `private/` or set the documented
-environment variable for your provider, then let `task install` load them into
-Crossplane.
+This writes credentials under `private/`, which is gitignored.
+
+If you already have suitable credentials:
+
+- GCP: put a service-account key at `private/gcp-credentials.json`, or run with
+  `GCP_CREDENTIALS_FILE=/path/to/key.json task install`.
+- AWS: set `awsProfile` in `deploy/config.yaml`, or put a standard credentials
+  file at `private/aws-credentials`.
+
+AWS credentials must be long-lived access keys. Temporary session credentials
+from AWS SSO or STS are rejected because Gardener AWS secrets currently need
+non-expiring access key material.
 
 Review [Permissions](reference/permissions.md) before using a shared account.
 
@@ -133,7 +167,8 @@ You can rerun `task install` if the process is interrupted.
 
 ## Validate The Result
 
-After install:
+`task install` runs `task validate-live` once the landscape is ready. To re-check
+the result later:
 
 ```bash
 task status

@@ -9,7 +9,9 @@ data:
   projectId: your-gcp-project-id
   region: europe-west1
   # GCP supports one or more runtime zones. Total runtime nodes are
-  # gcpNodesPerZone × number of zones.
+  # gcpNodesPerZone × number of zones. Check zone names with:
+  # gcloud compute zones list --filter='region:europe-west1' \
+  #   --format='value(name)'
   zones:
     - europe-west1-b
     - europe-west1-c

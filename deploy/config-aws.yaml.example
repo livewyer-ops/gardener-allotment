@@ -6,10 +6,13 @@ metadata:
   name: allotment-config
 data:
   provider: aws
+  # AWS account ID: 12 digits, no dashes.
   projectId: "123456789012"
   region: eu-west-1
-  # AWS supports 2 to 4 runtime zones. Add eu-west-1c/eu-west-1d if your
-  # account and selected region have those AZ names available.
+  # AWS supports 2 to 4 runtime zones. Add more AZ names from this region if
+  # they are available in your account. Check with:
+  # aws ec2 describe-availability-zones --region eu-west-1 \
+  #   --query 'AvailabilityZones[].ZoneName' --output text
   zones:
     - eu-west-1a
     - eu-west-1b
@@ -18,6 +21,7 @@ data:
   # expiresAt: "2026-06-30"
   dnsDomain: allotment.garden.internal
   awsProfile: default
+  # Garden Linux is the OS name; use a region-specific Garden Linux AMI ID.
   awsGardenlinuxAmi: ami-032075382f7aac30e
   awsNodesPerZone: 2
   createShoot: "false"

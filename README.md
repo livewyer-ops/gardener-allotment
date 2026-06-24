@@ -26,7 +26,7 @@ export PATH="$(aqua root-dir)/bin:$PATH"
 # Pick a provider and copy its config example into place:
 cp deploy/config-gcp.yaml.example deploy/config.yaml   # GCP  (GKE + Cloud DNS)
 cp deploy/config-aws.yaml.example deploy/config.yaml   # AWS  (EKS + Route 53)
-vim deploy/config.yaml    # Set provider, projectId/account ID, region, zones
+vim deploy/config.yaml    # Set provider, projectId, region, zones
 
 task bootstrap-identity  # Optional: create disposable cloud credentials
 task build               # Validate and assemble the provider manifest bundle
@@ -82,16 +82,19 @@ cp deploy/config-aws.yaml.example deploy/config.yaml   # AWS
 ```
 
 The config is a Crossplane `EnvironmentConfig`. The example files are the
-canonical, commented templates — copy one and edit the provider, `projectId`,
-`region`, `zones`, and `dnsDomain`. [Getting Started](docs/getting-started.md#choose-a-provider)
-explains each field.
+canonical, commented templates — copy one and edit the provider, `projectId`
+(GCP project ID or AWS 12-digit account ID without dashes), `region`, `zones`,
+and `dnsDomain`. [Getting Started](docs/getting-started.md#choose-a-provider)
+explains each field, including how to list valid zones for the selected cloud.
 
 `task bootstrap-identity` is an evaluation helper: it creates a disposable cloud
 identity and writes local credentials under `private/`. `task install` then calls
 `task load-identity` after Crossplane is available to load those credentials into
-Kubernetes secrets. If you already have credentials, put them in `private/` (a
-GCP service-account key or an AWS profile/credentials file) or set the documented
-provider credential variable, then run `task install` directly.
+Kubernetes secrets. If you already have credentials, use `private/gcp-credentials.json`
+or `GCP_CREDENTIALS_FILE=/path/key.json` for GCP, and `awsProfile` or
+`private/aws-credentials` for AWS. AWS credentials must be long-lived access keys;
+temporary session credentials are rejected because Gardener AWS secrets do not
+support them in this flow.
 
 ## Architecture
 
@@ -150,6 +153,7 @@ See [Getting Started](docs/getting-started.md) for the guided flow and
 | Hangs at "Infrastructure provisioning..." | Runtime cluster (GKE/EKS) creation (~10 min) | Wait 15 min, then `task status` |
 | Hangs at "Garden: Processing" | Gardener deploying (~10 min) | Wait. "Garden: Error" is transient |
 | Hangs at "remaining..." | Runtime cluster (GKE/EKS) deletion (~5 min) | Wait |
+| GKE cluster stays failed or unavailable | Zone capacity, quota, or cloud API error | `task status`; choose another zone if GCP reports capacity exhaustion |
 | `task bootstrap-identity` fails (GCP) | Missing project IAM/API/service-account permissions | Use a dedicated eval project and grant the bootstrap operator the permissions in `docs/reference/permissions.md` |
 | `task bootstrap-identity` fails (AWS) | Missing IAM admin on the profile | Use a dedicated eval account and grant the bootstrap operator the permissions in `docs/reference/permissions.md` |
 | Dashboard login fails | Garden not ready | `task status`, wait for Succeeded |

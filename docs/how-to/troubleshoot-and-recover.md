@@ -43,7 +43,21 @@ in `kube-system` on the runtime cluster rather than forcing past it.
 
 **Real problem:** a provider reporting unhealthy in `task status`, a managed
 resource stuck `SYNCED=False` with an authentication or quota error in its
-events, or a probe Job failing with a non-`100.64` pod IP in its logs.
+events, a GKE operation reporting zone capacity exhaustion, or a probe Job
+failing with a non-`100.64` pod IP in its logs.
+
+For the AWS pod-CIDR gate:
+
+```bash
+task kubeconfig
+KUBECONFIG=private/runtime-kubeconfig kubectl get jobs,pods -n kube-system \
+  | grep pod-cidr-probe
+KUBECONFIG=private/runtime-kubeconfig kubectl logs -n kube-system \
+  job/<cluster>-pod-cidr-probe-<slot>
+```
+
+The probe job names use the configured cluster name and zone slot, for example
+`allotment-pod-cidr-probe-a`.
 
 ## Teardown — Normal vs Real Problem
 

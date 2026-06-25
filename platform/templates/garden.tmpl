@@ -361,6 +361,13 @@ metadata:
     gotemplating.fn.crossplane.io/composition-resource-name: ext-provider-{{ $provider }}
 spec:
   deletionPolicy: Orphan
+  # Track the operator's own reconciliation rather than provider-kubernetes'
+  # one-shot SuccessfulCreate default, which only writes Ready=Available once
+  # during Create and never re-asserts it — leaving the Object wedged at
+  # "Creating" if that write races (e.g. the Extension CRD registering late).
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status.conditions) && object.status.conditions.exists(c, c.type == "Installed" && c.status == "True")
   forProvider:
     manifest:
       apiVersion: operator.gardener.cloud/v1alpha1
@@ -472,6 +479,11 @@ metadata:
     gotemplating.fn.crossplane.io/composition-resource-name: ext-net-calico
 spec:
   deletionPolicy: Orphan
+  # See ext-provider-* above: derive readiness from the operator's Installed
+  # condition instead of the fragile SuccessfulCreate one-shot.
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status.conditions) && object.status.conditions.exists(c, c.type == "Installed" && c.status == "True")
   forProvider:
     manifest:
       apiVersion: operator.gardener.cloud/v1alpha1
@@ -516,6 +528,11 @@ metadata:
     gotemplating.fn.crossplane.io/composition-resource-name: ext-os-gardenlinux
 spec:
   deletionPolicy: Orphan
+  # See ext-provider-* above: derive readiness from the operator's Installed
+  # condition instead of the fragile SuccessfulCreate one-shot.
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status.conditions) && object.status.conditions.exists(c, c.type == "Installed" && c.status == "True")
   forProvider:
     manifest:
       apiVersion: operator.gardener.cloud/v1alpha1
@@ -548,6 +565,11 @@ metadata:
     gotemplating.fn.crossplane.io/composition-resource-name: ext-os-ubuntu
 spec:
   deletionPolicy: Orphan
+  # See ext-provider-* above: derive readiness from the operator's Installed
+  # condition instead of the fragile SuccessfulCreate one-shot.
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status.conditions) && object.status.conditions.exists(c, c.type == "Installed" && c.status == "True")
   forProvider:
     manifest:
       apiVersion: operator.gardener.cloud/v1alpha1
@@ -580,6 +602,11 @@ metadata:
     gotemplating.fn.crossplane.io/composition-resource-name: ext-shoot-cert
 spec:
   deletionPolicy: Orphan
+  # See ext-provider-* above: derive readiness from the operator's Installed
+  # condition instead of the fragile SuccessfulCreate one-shot.
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status.conditions) && object.status.conditions.exists(c, c.type == "Installed" && c.status == "True")
   forProvider:
     manifest:
       apiVersion: operator.gardener.cloud/v1alpha1
@@ -641,6 +668,11 @@ metadata:
     gotemplating.fn.crossplane.io/composition-resource-name: ext-shoot-dns
 spec:
   deletionPolicy: Orphan
+  # See ext-provider-* above: derive readiness from the operator's Installed
+  # condition instead of the fragile SuccessfulCreate one-shot.
+  readiness:
+    policy: DeriveFromCelQuery
+    celQuery: has(object.status.conditions) && object.status.conditions.exists(c, c.type == "Installed" && c.status == "True")
   forProvider:
     manifest:
       apiVersion: operator.gardener.cloud/v1alpha1

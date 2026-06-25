@@ -864,12 +864,18 @@ spec:
       # creates a dense ClusterUsage graph that exceeds Crossplane function
       # gRPC limits once AWS zones are generated dynamically. AWS references
       # and provider retries handle normal VPC dependency ordering; these
-      # rules only protect the runtime cluster while provider configs and
-      # runtime-applied resources still depend on it.
+      # rules only protect runtime cluster bootstrap:
+      # - create the API server and ClusterAuth first
+      # - create ProviderConfigs as soon as the kubeconfig secret exists
+      # - apply ENIConfigs before starting nodes, because aws-node custom
+      #   networking waits on them during managed node group bootstrap
+      # - prove pod CIDRs only after nodes exist
       - sequence:
         - eks-cluster
-        - (eks-nodegroup|eks-cluster-auth|vpc-cni-addon|oidc-provider)
+        - (eks-cluster-auth|vpc-cni-addon|oidc-provider)
         - (helm-providerconfig-runtime|k8s-providerconfig-runtime|k8s-providerconfig-infra|ebs-csi-role|ebs-csi-policy)
-        - (eniconfig-.*|pod-cidr-probe-.*|eks-ebs-csi|dns-zone)
+        - eniconfig-.*
+        - eks-nodegroup
+        - (pod-cidr-probe-.*|eks-ebs-csi|dns-zone)
       enableDeletionSequencing: true
       replayDeletion: true

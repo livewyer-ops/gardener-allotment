@@ -4,6 +4,21 @@ All notable changes to this project are documented here. This project follows
 [Conventional Commits](https://www.conventionalcommits.org/) and
 [Semantic Versioning](https://semver.org/).
 
+## 1.1.1 — 2026-06-25
+
+Readiness and teardown fixes for AWS and Gardener extension convergence.
+
+- Hardened provider runtime readiness: AWS now applies ENIConfigs before
+  managed node group creation and runs pod-CIDR probes only after nodes exist;
+  GCP runtime kubeconfig generation now handles IP endpoints with CA data and
+  DNS fallback without CA data.
+- Derived Gardener operator `Extension` Object readiness from the operator's
+  `Installed=True` condition, avoiding stuck `Creating` states when
+  provider-kubernetes' one-shot readiness update races CRD registration.
+- Kept EKS IAM roles and policy attachments ahead of dependent EKS resources in
+  the AWS sequencer so teardown preserves IAM until EKS has deleted node groups,
+  add-ons, auth/OIDC resources, and the cluster.
+
 ## 1.1.0 — 2026-06-18
 
 Zone-count flexibility for runtime clusters.

@@ -865,12 +865,16 @@ spec:
       # gRPC limits once AWS zones are generated dynamically. AWS references
       # and provider retries handle normal VPC dependency ordering; these
       # rules only protect runtime cluster bootstrap:
+      # - create IAM roles/policy attachments before the EKS resources that
+      #   depend on them; on teardown this keeps IAM in place until EKS has
+      #   drained nodes and released VPC CNI-managed ENIs
       # - create the API server and ClusterAuth first
       # - create ProviderConfigs as soon as the kubeconfig secret exists
       # - apply ENIConfigs before starting nodes, because aws-node custom
       #   networking waits on them during managed node group bootstrap
       # - prove pod CIDRs only after nodes exist
       - sequence:
+        - (eks-cluster-role|eks-cluster-policy|eks-node-role|eks-node-policy|eks-cni-policy|eks-ecr-policy)
         - eks-cluster
         - (eks-cluster-auth|vpc-cni-addon|oidc-provider)
         - (helm-providerconfig-runtime|k8s-providerconfig-runtime|k8s-providerconfig-infra|ebs-csi-role|ebs-csi-policy)

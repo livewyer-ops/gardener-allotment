@@ -4,6 +4,16 @@ All notable changes to this project are documented here. This project follows
 [Conventional Commits](https://www.conventionalcommits.org/) and
 [Semantic Versioning](https://semver.org/).
 
+## 1.1.2 - 2026-06-29
+
+Documentation polish.
+
+- Added an AWS quickstart GIF as the README lead visual, recorded from a real
+  run with the wait condensed and the elapsed times kept real.
+- Linked the official aqua install guide from the prerequisites.
+- Normalised documentation typography to ASCII and switched headings to
+  sentence case.
+
 ## 1.1.1 - 2026-06-25
 
 Readiness and teardown fixes for AWS and Gardener extension convergence.

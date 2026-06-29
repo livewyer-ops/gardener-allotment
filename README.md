@@ -5,6 +5,8 @@
 
 Deploy a working [Gardener](https://gardener.cloud) landscape from a single config file. Supports **GCP** and **AWS**. Optionally create a shoot cluster automatically. Designed for evaluating Gardener, not for production.
 
+![Allotment AWS quickstart: bootstrap a disposable identity, build, and one `kubectl apply` converging 255 managed resources into a ready Gardener landscape. Recording condensed from a real ~23-minute run; the elapsed times shown are real.](docs/assets/quickstart-aws.gif)
+
 New to Gardener? Start with the guided [Getting started](docs/getting-started.md)
 path. It explains the Gardener concepts used by this repository, the evaluation
 flow, validation checks, Dashboard exploration, and cleanup.

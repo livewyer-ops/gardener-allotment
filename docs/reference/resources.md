@@ -50,7 +50,7 @@ Six XRDs in `platform/definitions.yaml`:
 descendant is reconciled away; foreground cascading deletion recurses through
 nested XRs via `blockOwnerDeletion` ownerReferences. (The XRDs still carry
 `defaultCompositeDeletePolicy: Foreground`, but in `apiextensions.crossplane.io/v2`
-that field is deprecated and only affects claim-based deletion — claims aren't
+that field is deprecated and only affects claim-based deletion - claims aren't
 used here.)
 
 ## `runtime-*` naming convention
@@ -72,7 +72,7 @@ cluster or the virtual garden API) use a `runtime-` prefix:
 
 ### Infrastructure (`infra-{provider}`)
 
-Pipeline — GCP: `load-versions → sequence → patch-and-transform → auto-ready`;
+Pipeline - GCP: `load-versions → sequence → patch-and-transform → auto-ready`;
 AWS: `load-versions → render-zone-resources → patch-and-transform → auto-ready → sequence`.
 The connection secret propagates the runtime kubeconfig as `runtime-connection`
 in `crossplane-system`.
@@ -141,7 +141,7 @@ Pipeline: `load-versions → create-gardenlet (go-templating) → auto-ready`.
 
 | Resource | Type | Purpose |
 |---|---|---|
-| `seed-gardenlet` | Object (double-nested) | [Gardenlet](https://gardener.cloud/docs/gardener/concepts/gardenlet/) CR — deploys gardenlet, registers the seed |
+| `seed-gardenlet` | Object (double-nested) | [Gardenlet](https://gardener.cloud/docs/gardener/concepts/gardenlet/) CR - deploys gardenlet, registers the seed |
 | `seed-cr` | Object (double-nested, Observe+Delete) | Delete-hook: deletion triggers gardenlet's drain |
 | `seed-registration-permit` | Object (double-nested) | `allow-seed-registration` marker ConfigMap |
 | `gardenlet-deploy-hook` | Object (Observe+Delete) | Deletes the gardenlet Deployment after the drain |

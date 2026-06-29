@@ -6,25 +6,25 @@ The [gardenlet](https://gardener.cloud/docs/gardener/concepts/gardenlet/)
 registers the runtime cluster as a Gardener seed, which enables shoot creation.
 Gardener requires the seed's node, pod, and service networks to be
 [non-overlapping](https://gardener.cloud/docs/getting-started/common-pitfalls/),
-and it validates the declared pod network against the pods it actually sees — so
+and it validates the declared pod network against the pods it actually sees - so
 the network layout is not cosmetic.
 
 ## Shared configuration
 
-- **Runtime zones** — `deploy/config.yaml` specifies the runtime zones in the
+- **Runtime zones**: `deploy/config.yaml` specifies the runtime zones in the
   selected region. GCP accepts one or more zones and passes the list directly to
   GKE `nodeLocations`. AWS accepts two to four zones and renders public,
   private, and pod subnets, NAT gateways, private route tables, ENIConfigs, and
   pod-CIDR probes from the same ordered zone list. Garden and Seed zone lists
   render from the same config.
-- **DNS secrets** — `internal-domain` (`gardener.cloud/role: internal-domain`)
+- **DNS secrets**: `internal-domain` (`gardener.cloud/role: internal-domain`)
   for Gardener infrastructure; `default-domain`
   (`gardener.cloud/role: default-domain`) for shoot auto-DNS.
-- **DNS zones** — private on both providers (GCP Cloud DNS, AWS Route 53 PHZ).
+- **DNS zones**: private on both providers (GCP Cloud DNS, AWS Route 53 PHZ).
   Shoots share the seed VPC, so the private zones are visible to shoot workers.
-- **ACME** — `generateControlPlaneCertificate: false`, because private DNS cannot
+- **ACME**: `generateControlPlaneCertificate: false`, because private DNS cannot
   pass the ACME challenge (staging certs; browser warnings).
-- **Ingress** — seed ingress at `seed.{dnsDomain}`.
+- **Ingress**: seed ingress at `seed.{dnsDomain}`.
 
 ## GCP network CIDRs
 
@@ -79,25 +79,25 @@ size are `2 × len(zones)` and maximum size adds one surge node per zone.
 The AWS infra sequencer runs *after* resource rendering and holds the managed
 node group until the VPC CNI add-on and ENIConfigs are ready. One runtime Job per
 configured zone then proves that non-hostNetwork pod IPs in that zone fall
-inside `100.64.0.0/16`. `XInfra` does not become Ready until all probes succeed
-— so a Seed is never registered with a pod network that does not match reality.
+inside `100.64.0.0/16`. `XInfra` does not become Ready until all probes succeed -
+so a Seed is never registered with a pod network that does not match reality.
 A hang here is the gate working; see
 [troubleshoot-and-recover](../how-to/troubleshoot-and-recover.md).
 
 ## Default shoot networking
 
 When `createShoot: "true"`, XVirtualGarden creates a shoot named `eval`. Both
-providers share the seed VPC so shoot workers resolve the private DNS zone — no
+providers share the seed VPC so shoot workers resolve the private DNS zone - no
 domain ownership needed.
 
-**GCP shoot** — uses the seed's default VPC (`vpc.name: default`) with Cloud
+**GCP shoot** - uses the seed's default VPC (`vpc.name: default`) with Cloud
 Router for NAT; workers in `172.16.0.0/16` (outside the default VPC's
-`10.128.0.0/9` auto-subnet range); 1–2 `n1-standard-2` workers in the first
+`10.128.0.0/9` auto-subnet range); 1-2 `n1-standard-2` workers in the first
 configured runtime zone, Garden Linux, Calico.
 
-**AWS shoot** — uses the seed VPC (`vpc.id`) with the `10.250.0.0/16` secondary
+**AWS shoot** - uses the seed VPC (`vpc.id`) with the `10.250.0.0/16` secondary
 CIDR for workers (`10.250.0.0/19`), public `10.250.96.0/22`, internal
 `10.250.112.0/22`. The shoot node CIDR is disjoint from the seed CIDRs, so no VPN
 double-NAT is needed; Gardener creates its own NAT gateway, subnets, and route
-tables within the shared VPC. 1–2 `m5.xlarge` workers in the first configured
+tables within the shared VPC. 1-2 `m5.xlarge` workers in the first configured
 runtime zone, Garden Linux, Calico.

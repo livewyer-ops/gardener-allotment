@@ -2,7 +2,7 @@
 
 Every control-plane, provider, function, Gardener, extension, and Kubernetes
 version is pinned. To avoid drift, the docs do not duplicate the version
-numbers — the authoritative sources are the files below.
+numbers - the authoritative sources are the files below.
 
 ## Sources of truth
 

@@ -4,7 +4,7 @@
 
 A local kind cluster runs Crossplane, which provisions cloud infrastructure and
 deploys [Gardener](https://gardener.cloud/docs/getting-started/architecture/)
-through a single root composite (`XAllotment`) that composes five child XRs —
+through a single root composite (`XAllotment`) that composes five child XRs -
 one per Gardener lifecycle concern. Creation **converges
 naturally**: every child retries until its dependencies are ready, so the user
 applies one resource and waits on one condition rather than orchestrating steps.
@@ -81,7 +81,7 @@ versions available to patches and go-templates. The full field list is in the
 All compositions are per-provider; claims select one with
 `compositionSelector.matchLabels.provider` (`aws` or `gcp`). The Taskfile derives
 `PROVIDER` from `deploy/config.yaml` and dispatches provider-specific identity
-tasks — see the [task reference](../reference/task-targets.md).
+tasks - see the [task reference](../reference/task-targets.md).
 
 ## Install sequence
 
@@ -89,7 +89,7 @@ tasks — see the [task reference](../reference/task-targets.md).
 
 1. Create kind cluster from `kind.yaml`.
 2. Apply `bootstrap/crossplane.yaml` (Crossplane Helm chart).
-3. `task load-identity` once the Crossplane namespace exists — create credential
+3. `task load-identity` once the Crossplane namespace exists: create credential
    secrets (the only unavoidable imperative step).
 4. Apply `bootstrap/providers-common.yaml` + `bootstrap/providers-<provider>.yaml`;
    wait for providers healthy.
@@ -97,11 +97,11 @@ tasks — see the [task reference](../reference/task-targets.md).
    `platform/configs/`, `deploy/config.yaml`, and
    `platform/compositions/<provider>/`.
 6. Wait for the `xallotments.allotment.io` CRD to be Established.
-7. Apply `deploy/claims/<provider>/allotment.yaml` — one XAllotment claim.
-8. `kubectl wait --for=condition=Ready xallotment/garden --timeout=40m` —
+7. Apply `deploy/claims/<provider>/allotment.yaml`: one XAllotment claim.
+8. `kubectl wait --for=condition=Ready xallotment/garden --timeout=40m`:
    Crossplane converges everything in one step.
 
 `XGarden`'s Ready condition reflects the Garden CR's `lastOperation.state`
 (`Succeeded`). Operational health still needs the Garden status conditions, since
-post-ready component pressure can make a previously-succeeded Garden unhealthy —
+post-ready component pressure can make a previously-succeeded Garden unhealthy -
 [`task observability`](../how-to/troubleshoot-and-recover.md) surfaces these.

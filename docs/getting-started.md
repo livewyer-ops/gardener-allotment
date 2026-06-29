@@ -1,10 +1,10 @@
-# Getting Started
+# Getting started
 
 This guide is for someone evaluating Gardener for the first time. It explains
 what Allotment builds, how to run it safely, what to inspect, and how to remove
 everything afterwards.
 
-## What You Will Build
+## What you will build
 
 Allotment creates a disposable Gardener landscape in your own AWS account or GCP
 project:
@@ -19,7 +19,7 @@ project:
 The goal is evaluation. The defaults favor a repeatable demo over production
 hardening.
 
-## Gardener Concepts In This Repository
+## Gardener concepts in this repository
 
 | Concept | How to think about it here |
 |---|---|
@@ -35,7 +35,7 @@ For the full product model, use the official
 [architecture overview](https://gardener.cloud/docs/getting-started/architecture/).
 This guide only covers the path Allotment automates.
 
-## Before You Start
+## Before you start
 
 Use a dedicated cloud account or project. Allotment can create broad evaluation
 credentials and real billable resources.
@@ -58,7 +58,7 @@ After this step, Allotment's standard commands use the pinned `task`, `kind`,
 CLI from `aqua.yaml`. Docker remains external because it is a local runtime, not
 just a CLI.
 
-## Choose A Provider
+## Choose a provider
 
 For GCP:
 
@@ -98,7 +98,7 @@ account that will run the evaluation.
 GCP also needs `vpcNetwork`. AWS also needs `awsProfile` and a Garden Linux AMI
 for the selected region. Garden Linux is the operating system name.
 
-## Plan The Cloud Footprint
+## Plan the cloud footprint
 
 The defaults create real resources:
 
@@ -112,7 +112,7 @@ The defaults create real resources:
 Use a dedicated account or project, and tear it down when the evaluation is
 finished.
 
-## Create Or Load Credentials
+## Create or load credentials
 
 For a disposable evaluation identity:
 
@@ -135,7 +135,7 @@ non-expiring access key material.
 
 Review [Permissions](reference/permissions.md) before using a shared account.
 
-## Build And Validate Locally
+## Build and validate locally
 
 Run the static checks before creating cloud resources:
 
@@ -148,7 +148,7 @@ task build
 These commands validate YAML and Taskfiles, render the Crossplane compositions
 for both providers, and assemble the provider-specific bundle.
 
-## Install The Landscape
+## Install the landscape
 
 ```bash
 task install
@@ -165,7 +165,7 @@ Typical timing:
 
 You can rerun `task install` if the process is interrupted.
 
-## Validate The Result
+## Validate the result
 
 `task install` runs `task validate-live` once the landscape is ready. To re-check
 the result later:
@@ -202,7 +202,7 @@ For a first evaluation, inspect:
 - The optional `eval` shoot, if enabled.
 - Events and health conditions during creation.
 
-## Clean Up
+## Clean up
 
 Always remove cloud resources when you finish:
 
@@ -217,8 +217,8 @@ the cleanup through the dependency chain. `task deauth` removes the disposable
 cloud identity and local credentials. `task verify-clean` performs a read-only
 cloud leftover audit for deterministic Allotment resource names.
 
-## What To Read Next
+## What to read next
 
-- [Capability Demo](how-to/capability-demo.md) for a reviewer-focused tour.
+- [Capability demo](how-to/capability-demo.md) for a reviewer-focused tour.
 - [Convergence model](explanation/convergence-model.md) and [teardown ordering](explanation/teardown-ordering.md) for the design.
 - [Permissions](reference/permissions.md) for credential posture.

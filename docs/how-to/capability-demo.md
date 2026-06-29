@@ -1,10 +1,10 @@
-# Capability Demo
+# Capability demo
 
 This path is for reviewers who have completed
-[Getting Started](../getting-started.md) and want to see the cloud-native and
+[Getting started](../getting-started.md) and want to see the cloud-native and
 Kubernetes capabilities directly rather than only reading the architecture.
 
-## Demo Flow
+## Demo flow
 
 1. Configure a provider:
 
@@ -60,7 +60,7 @@ Kubernetes capabilities directly rather than only reading the architecture.
    task verify-clean
    ```
 
-## Capability Map
+## Capability map
 
 | Capability | Implementation | User-visible outcome |
 |---|---|---|

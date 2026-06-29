@@ -1,4 +1,4 @@
-# Permissions and Endpoint Posture
+# Permissions and endpoint posture
 
 Allotment is an evaluation sandbox. The supported permission model is
 resource-level admin in a disposable cloud account or project, not production
@@ -11,7 +11,7 @@ full landscape. A narrow custom policy that is not continuously derived and
 validated against both providers would be more fragile than honest, documented
 evaluation-admin credentials.
 
-## Bootstrap Cloud Identity
+## Bootstrap cloud identity
 
 `task bootstrap-identity` creates a disposable identity that can create the
 runtime cluster, networking, DNS, IAM/service accounts, and Gardener backup
@@ -57,7 +57,7 @@ The runtime cluster also gets a long-lived admin service account so `task
 kubeconfig` and `task dashboard` work without cloud-specific kubeconfig helpers
 after the initial identity setup.
 
-## Public Endpoint Posture
+## Public endpoint posture
 
 AWS EKS currently sets `endpointPublicAccess: true` because the Crossplane
 control plane runs in local kind and must reach the runtime API server from the
@@ -72,7 +72,7 @@ would need one of:
 - Configurable authorized networks for the operator's current public IP
 - Private connectivity from the local control plane to the cloud VPC
 
-## Least-Privilege Follow-Up
+## Least-privilege follow-up
 
 Do not hand-roll a partial "least privilege" policy from memory. The
 narrow-permissions workstream should derive provider policies from observed

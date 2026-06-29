@@ -4,8 +4,8 @@
 
 The Gardener virtual garden API server runs **inside** the runtime cluster
 (EKS/GKE) and is not reachable from the local kind control plane. Yet most
-Gardener tenant resources — CloudProfile, Project, credentials, the optional
-shoot — must be created against that virtual garden API.
+Gardener tenant resources - CloudProfile, Project, credentials, the optional
+shoot - must be created against that virtual garden API.
 
 Allotment bridges this with **double-nesting**: each virtual-garden resource is
 an Object-in-Object.
@@ -28,7 +28,7 @@ ProviderConfig.
 
 ## Consequences
 
-- The kind cluster never needs network access to the virtual garden — everything
+- The kind cluster never needs network access to the virtual garden: everything
   flows through the runtime cluster's Crossplane bridge.
 - Readiness has to be threaded from the inner Object up to the outer wrapper, so
   the bootstrap wrapper's readiness follows the real resource's readiness.

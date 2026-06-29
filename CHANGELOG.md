@@ -4,7 +4,7 @@ All notable changes to this project are documented here. This project follows
 [Conventional Commits](https://www.conventionalcommits.org/) and
 [Semantic Versioning](https://semver.org/).
 
-## 1.1.1 — 2026-06-25
+## 1.1.1 - 2026-06-25
 
 Readiness and teardown fixes for AWS and Gardener extension convergence.
 
@@ -19,7 +19,7 @@ Readiness and teardown fixes for AWS and Gardener extension convergence.
   the AWS sequencer so teardown preserves IAM until EKS has deleted node groups,
   add-ons, auth/OIDC resources, and the cluster.
 
-## 1.1.0 — 2026-06-18
+## 1.1.0 - 2026-06-18
 
 Zone-count flexibility for runtime clusters.
 
@@ -33,7 +33,7 @@ Zone-count flexibility for runtime clusters.
 - Added `awsNodesPerZone` for AWS runtime node sizing.
 - Extended render validation to exercise three-zone AWS and GCP configurations.
 
-## 1.0.0 — 2026-06-16
+## 1.0.0 - 2026-06-16
 
 Initial public release.
 

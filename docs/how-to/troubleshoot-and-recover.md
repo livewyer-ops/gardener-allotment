@@ -1,4 +1,4 @@
-# Operations and Recovery
+# Operations and recovery
 
 Allotment converges through Crossplane and Gardener, so install and teardown are
 long-running and produce alarming-but-expected signals along the way. This page
@@ -9,7 +9,7 @@ The guiding rule: **Allotment is convergence-driven. Most "stuck" states resolve
 themselves on the controllers' own retry schedule. Prefer waiting and re-running
 the task over manual intervention.**
 
-## Expected Timings
+## Expected timings
 
 | Phase | Typical | Notes |
 |---|---|---|
@@ -24,7 +24,7 @@ the task over manual intervention.**
 These are evaluation-environment observations, not guarantees. Wait at least to
 the upper bound before treating a phase as stuck.
 
-## Install — Normal vs Real Problem
+## Install - normal vs real problem
 
 **Normal:**
 
@@ -38,7 +38,7 @@ Jobs that must observe pod IPs inside `100.64.0.0/16` before `XInfra` becomes
 Ready. If custom networking never takes effect, the probes never pass, `XInfra`
 never goes Ready, and `task install` waits out the 40-minute `XAllotment` wait
 rather than registering a Seed with a pod network that does not match reality.
-A hang here is the gate working — inspect with `task status` and the probe Jobs
+A hang here is the gate working - inspect with `task status` and the probe Jobs
 in `kube-system` on the runtime cluster rather than forcing past it.
 
 **Real problem:** a provider reporting unhealthy in `task status`, a managed
@@ -59,7 +59,7 @@ KUBECONFIG=private/runtime-kubeconfig kubectl logs -n kube-system \
 The probe job names use the configured cluster name and zone slot, for example
 `allotment-pod-cidr-probe-a`.
 
-## Teardown — Normal vs Real Problem
+## Teardown - normal vs real problem
 
 `task teardown` runs `kubectl delete xallotment garden --cascade=foreground`,
 captures redacted diagnostics, and only removes the kind cluster if the cascade
@@ -81,14 +81,14 @@ The following are **expected** during seed deregistration and are *not* failures
   During seed deregistration the dependency-graph edges the gardenlet relies on
   are being torn down concurrently, so these requests are transiently denied.
   They self-resolve once `controller-runtime` retries; the seed drain then
-  proceeds. **Do not intervene** — on GCP this phase can sit apparently idle for
+  proceeds. **Do not intervene** - on GCP this phase can sit apparently idle for
   several minutes before draining, which is why GCP teardown runs ~30 min.
 
 **Real problem:** the cascade exceeds the 45-minute timeout with no progress
 across two diagnostics captures, or a managed resource reports a hard cloud-API
 error (quota, permission, dependency-violation) that is not clearing on retry.
 
-## Diagnosing a Stuck Lifecycle
+## Diagnosing a stuck lifecycle
 
 ```bash
 task status          # claim, child XRs, managed resources, recent warnings
@@ -98,7 +98,7 @@ task kubeconfig      # then inspect the runtime cluster directly
 
 On teardown, `task teardown` also writes a redacted snapshot to
 `private/logs/teardown-<timestamp>.log` (Crossplane, providers, XRs, managed
-resources, recent warnings) before kind is removed — compare a stuck run against
+resources, recent warnings) before kind is removed - compare a stuck run against
 a known-good one.
 
 To watch the runtime side during seed drain:
@@ -126,14 +126,14 @@ re-run it. A rare AWS NAT Elastic IP release race has been observed (about one
 in several cycles) where the EIP remains allocated but unassociated after its
 managed resource is gone; release it manually if `verify-clean` reports it.
 
-**Break-glass (last resort).** If a teardown is genuinely deadlocked — diagnosed,
-not assumed — seed-class `ManagedResource`s on the runtime cluster can be deleted
+**Break-glass (last resort).** If a teardown is genuinely deadlocked - diagnosed,
+not assumed - seed-class `ManagedResource`s on the runtime cluster can be deleted
 by hand to let Garden's deletion DAG proceed. Treat this as evidence of a bug to
 fix in the compositions, not a routine step: **do not force-remove finalizers as
 a first response, and never patch resource *state* to paper over a stuck
 cascade.** Capture the diagnostics log first so the root cause can be addressed.
 
-## Cleaning Local State
+## Cleaning local state
 
 ```bash
 task clean-private   # remove generated logs and kubeconfigs, keep credentials

@@ -5,13 +5,13 @@
 
 Deploy a working [Gardener](https://gardener.cloud) landscape from a single config file. Supports **GCP** and **AWS**. Optionally create a shoot cluster automatically. Designed for evaluating Gardener, not for production.
 
-New to Gardener? Start with the guided [Getting Started](docs/getting-started.md)
+New to Gardener? Start with the guided [Getting started](docs/getting-started.md)
 path. It explains the Gardener concepts used by this repository, the evaluation
 flow, validation checks, Dashboard exploration, and cleanup.
 
 ## Quickstart
 
-This is the short command path. Use [Getting Started](docs/getting-started.md)
+This is the short command path. Use [Getting started](docs/getting-started.md)
 for the full journey and safety context.
 
 Create a dedicated cloud project/account for evaluation -- Allotment can create
@@ -33,7 +33,7 @@ task build               # Validate and assemble the provider manifest bundle
 task install             # Deploy everything (~25 min)
 ```
 
-When it finishes, the Gardener Dashboard is running with a registered seed — ready to create shoot clusters.
+When it finishes, the Gardener Dashboard is running with a registered seed - ready to create shoot clusters.
 
 To also create a default shoot cluster automatically, set `createShoot: "true"` in `deploy/config.yaml` before running `task install`. The shoot takes ~15 minutes to provision after the landscape is ready.
 
@@ -49,7 +49,7 @@ task teardown
 task deauth       # Remove bootstrap identity and local credentials
 ```
 
-`task install` is idempotent — safe to re-run if interrupted.
+`task install` is idempotent - safe to re-run if interrupted.
 
 ## Prerequisites
 
@@ -82,9 +82,9 @@ cp deploy/config-aws.yaml.example deploy/config.yaml   # AWS
 ```
 
 The config is a Crossplane `EnvironmentConfig`. The example files are the
-canonical, commented templates — copy one and edit the provider, `projectId`
+canonical, commented templates - copy one and edit the provider, `projectId`
 (GCP project ID or AWS 12-digit account ID without dashes), `region`, `zones`,
-and `dnsDomain`. [Getting Started](docs/getting-started.md#choose-a-provider)
+and `dnsDomain`. [Getting started](docs/getting-started.md#choose-a-provider)
 explains each field, including how to list valid zones for the selected cloud.
 
 `task bootstrap-identity` is an evaluation helper: it creates a disposable cloud
@@ -109,7 +109,7 @@ deploy/config.yaml → Taskfile.yml → kind cluster → Crossplane
        └─ XVirtualGarden → CloudProfile + Project + credentials + optional shoot
 ```
 
-One root composite (`XAllotment`) composes five child XRs plus the cloud ProviderConfig. Install: `kubectl apply` one claim, wait on one condition — children converge in parallel. Teardown: `kubectl delete xallotment/garden --cascade=foreground` — composed ClusterUsages release the children in reverse lifecycle order. See [docs/explanation/convergence-model.md](docs/explanation/convergence-model.md) for details.
+One root composite (`XAllotment`) composes five child XRs plus the cloud ProviderConfig. Install: `kubectl apply` one claim, wait on one condition - children converge in parallel. Teardown: `kubectl delete xallotment/garden --cascade=foreground` - composed ClusterUsages release the children in reverse lifecycle order. See [docs/explanation/convergence-model.md](docs/explanation/convergence-model.md) for details.
 
 For a reviewer-focused path through the Kubernetes-native behavior, see
 [docs/how-to/capability-demo.md](docs/how-to/capability-demo.md).
@@ -133,17 +133,17 @@ deploy/
 tests/chainsaw/        # Post-install Kubernetes assertions
 ```
 
-## Task Targets
+## Task targets
 
-`task help` is the authoritative list — it prints every target with descriptions
+`task help` is the authoritative list - it prints every target with descriptions
 and the current provider. The lifecycle groups into:
 
-- **Set up & validate** — `bootstrap-identity`, `build`, `validate`, `validate-render`
-- **Run** — `install`, `status`, `validate-live`, `observability`
-- **Access** — `kubeconfig`, `dashboard`, `token`
-- **Tear down** — `teardown`, `deauth`, `verify-clean`, `clean-private`
+- **Set up & validate**: `bootstrap-identity`, `build`, `validate`, `validate-render`
+- **Run**: `install`, `status`, `validate-live`, `observability`
+- **Access**: `kubeconfig`, `dashboard`, `token`
+- **Tear down**: `teardown`, `deauth`, `verify-clean`, `clean-private`
 
-See [Getting Started](docs/getting-started.md) for the guided flow and
+See [Getting started](docs/getting-started.md) for the guided flow and
 [docs/how-to/troubleshoot-and-recover.md](docs/how-to/troubleshoot-and-recover.md) for recovery.
 
 ## Troubleshooting
@@ -163,7 +163,7 @@ For expected-but-alarming install/teardown signals (gardenlet crashloop during
 seed drain, transient `SeedAuthorizer` denials, the AWS pod-CIDR gate) and
 recovery steps, see [docs/how-to/troubleshoot-and-recover.md](docs/how-to/troubleshoot-and-recover.md).
 
-## Limitations and Security
+## Limitations and security
 
 This is an **evaluation sandbox**, not production infrastructure:
 
@@ -183,12 +183,12 @@ public API endpoint posture.
 This is an evaluation sandbox; for production Gardener, follow the official
 [Gardener documentation](https://gardener.cloud/docs/).
 
-## What's Next
+## What's next
 
 - Explore the shoot cluster via the [Gardener Dashboard](https://gardener.cloud/docs/dashboard/)
 - Read the [Gardener documentation](https://gardener.cloud/docs/)
 
-## Getting Help
+## Getting help
 
 Use GitHub issues for bug reports and feature requests. For vulnerabilities, see
 [SECURITY.md](SECURITY.md) and report privately. For support boundaries, see
@@ -196,4 +196,4 @@ Use GitHub issues for bug reports and feature requests. For vulnerabilities, see
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE)
+Apache License 2.0 - see [LICENSE](LICENSE)

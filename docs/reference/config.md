@@ -55,7 +55,7 @@ data:
 | `awsGardenlinuxAmi` | AWS | yes | region-specific Garden Linux AMI for the CloudProfile; Garden Linux is the operating system name |
 | `awsNodesPerZone` | AWS | no | runtime nodes per configured zone (default `2`; max size adds one surge node per zone) |
 
-Quoted string values (`createShoot`, `expiresAt`) are intentional — they are
+Quoted string values (`createShoot`, `expiresAt`) are intentional - they are
 consumed as strings by the compositions.
 
 ## Choosing zones

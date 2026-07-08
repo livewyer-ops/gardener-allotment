@@ -71,8 +71,25 @@ tasks:
           "$@"
         }
 
-        command -v docker >/dev/null 2>&1 || die "docker not found. Crossplane render validation requires Docker."
-        docker info >/dev/null 2>&1 || die "Docker daemon is not available. Start Docker before running render validation."
+        # Container runtime: Docker, or Podman through its Docker-compatible
+        # API socket (no docker symlink needed - the render tooling speaks the
+        # API via DOCKER_HOST, not the docker binary).
+        if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+          :
+        elif command -v podman >/dev/null 2>&1; then
+          if [ -z "${DOCKER_HOST:-}" ]; then
+            sock="$(podman info --format json 2>/dev/null | tool yq -p json -r '.host.remoteSocket.path // ""')"
+            case "$sock" in
+              unix://*) export DOCKER_HOST="$sock" ;;
+              /*) export DOCKER_HOST="unix://$sock" ;;
+            esac
+          fi
+          sock_up="$(podman info --format json 2>/dev/null | tool yq -p json -r '.host.remoteSocket.exists // false')"
+          [ "$sock_up" = "true" ] \
+            || die "podman found but its API socket is not listening. Linux: systemctl --user start podman.socket; macOS: podman machine start (give the machine >=8 GiB memory)."
+        else
+          die "No container runtime found. Install Docker, or Podman with its API socket enabled."
+        fi
         tool crossplane version --client >/dev/null
 
         tmp="$(mktemp -d)"

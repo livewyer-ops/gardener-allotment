@@ -76,7 +76,7 @@ tasks:
         provider="{{.PROVIDER}}"
         if [ -z "$provider" ]; then provider="not configured"; fi
         printf 'provider: %s\n' "$provider"
-        printf 'task build | validate | validate-render | bootstrap-identity | load-identity | install | validate-live | observability | teardown | status | kubeconfig | dashboard | token | deauth | verify-clean | clean-private\n'
+        printf 'task preflight | build | validate | validate-render | bootstrap-identity | load-identity | install | validate-live | observability | teardown | status | kubeconfig | dashboard | token | deauth | verify-clean | clean-private\n'
 
   validate:
     desc: Lint and validate local manifests
@@ -95,6 +95,12 @@ tasks:
       - task: validate:run
       - task: build:run
 
+  preflight:
+    desc: Check config, container runtime, and cloud quota headroom before installing
+    cmds:
+      - task: config:preflight-config
+      - task: config:preflight-env
+
   bootstrap-identity:
     desc: Create disposable cloud credentials for evaluation
     cmds:
@@ -111,6 +117,7 @@ tasks:
     desc: Create kind, install Crossplane, and converge Allotment
     cmds:
       - task: config:preflight-install
+      - task: config:preflight-env
       - |
         set -euo pipefail
         install -d -m 700 private
@@ -168,18 +175,30 @@ tasks:
       - task: config:preflight-config
       - |
         set -euo pipefail
-        run_task() {
-          command -v task >/dev/null 2>&1 || {
-            echo "ERROR: task not found. Run aqua install and add \$(aqua root-dir)/bin to PATH." >&2
-            return 1
-          }
-          task "$@"
-        }
 
         echo "Deleting XAllotment (cascade through all children)..."
         status=0
-        kubectl delete xallotment garden --cascade=foreground --timeout=45m || status=$?
-        run_task ops:capture-teardown-diagnostics || true
+        if kubectl get xallotment garden >/dev/null 2>&1; then
+          kubectl delete xallotment garden --cascade=foreground --wait=false || status=$?
+          if [ "$status" -eq 0 ]; then
+            deadline=$(( $(date +%s) + ${TEARDOWN_TIMEOUT_SECONDS:-2700} ))
+            while kubectl get xallotment garden >/dev/null 2>&1; do
+              printf '\n=== teardown @ %s ===\n' "$(date -u +%H:%M:%SZ)"
+              crossplane resource trace xallotment.allotment.io/garden \
+                --show-package-dependencies=none \
+                --show-package-revisions=none || true
+              if kubectl wait --for=delete xallotment/garden --timeout=30s >/dev/null 2>&1; then
+                break
+              fi
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                status=1
+                echo "Teardown did not complete within ${TEARDOWN_TIMEOUT_SECONDS:-2700}s." >&2
+                break
+              fi
+            done
+          fi
+        fi
+        task ops:capture-teardown-diagnostics || true
         if [ "$status" -ne 0 ]; then
           echo "Teardown did not complete; preserving kind cluster for inspection." >&2
           exit "$status"

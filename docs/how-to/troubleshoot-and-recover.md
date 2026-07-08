@@ -132,10 +132,9 @@ extensions, whose charts ship identical cluster-scoped fluent resources, and
 during the seed drain the two owners fight (delete vs re-adopt). Teardown now
 arms the `allotment-fluent-teardown-guard` ValidatingAdmissionPolicy: the
 moment XSeed teardown starts, garden-side recreates are denied by admission,
-so the drain completes. `task teardown` streams the resources still deleting;
-if you ever see fluent resources named there for more than a few minutes,
-capture diagnostics and report it - the guard should have made that
-impossible.
+so the drain completes. `task teardown` streams the Crossplane resource trace;
+if it stops progressing during XSeed or XGarden deletion, capture diagnostics
+and report it - the guard should have made this path impossible.
 
 **Break-glass (last resort).** If a teardown is genuinely deadlocked - diagnosed,
 not assumed - seed-class `ManagedResource`s on the runtime cluster can be deleted

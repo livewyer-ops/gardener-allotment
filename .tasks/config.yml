@@ -153,3 +153,70 @@ tasks:
             fi
             ;;
         esac
+
+  preflight-env:
+    desc: Check container runtime and cloud quota headroom for the configured footprint
+    cmds:
+      - |
+        set -euo pipefail
+        die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+        warn() { printf 'WARN: %s\n' "$*" >&2; }
+        command -v yq >/dev/null 2>&1 || die "yq not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
+        yq_cfg() { yq -r "$1" deploy/config.yaml; }
+
+        # Container runtime: Docker, or Podman via its Docker-compatible API.
+        if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+          echo "runtime: docker"
+        elif command -v podman >/dev/null 2>&1 \
+          && [ "$(podman info --format json 2>/dev/null | yq -p json -r '.host.remoteSocket.exists // false')" = "true" ]; then
+          echo "runtime: podman (kind auto-detects it; set KIND_EXPERIMENTAL_PROVIDER=podman if Docker is also installed)"
+        else
+          die "No usable container runtime. Start Docker, or enable Podman's API socket (Linux: systemctl --user start podman.socket; macOS: podman machine start with >=8 GiB memory)."
+        fi
+
+        provider="$(yq_cfg '.data.provider // ""')"
+        region="$(yq_cfg '.data.region // ""')"
+        project="$(yq_cfg '.data.projectId // ""')"
+        zone_count="$(yq_cfg '.data.zones | length')"
+
+        if [ "$provider" = "gcp" ]; then
+          command -v gcloud >/dev/null 2>&1 || { warn "gcloud not found; skipping GCP quota check."; exit 0; }
+          nodes_per_zone="$(yq_cfg '.data.gcpNodesPerZone // "2"')"
+          machine="$(grep -m1 'machineType:' platform/compositions/gcp/infra.yaml | awk '{print $2}')"
+          vcpu="${machine##*-}"
+          disk_gb="$(grep -m1 'diskSizeGb:' platform/compositions/gcp/infra.yaml | awk '{print $2}')"
+          nodes=$(( nodes_per_zone * zone_count ))
+          need_cpu=$(( nodes * vcpu ))
+          need_disk=$(( nodes * disk_gb ))
+          echo "footprint: ${nodes} x ${machine} = ${need_cpu} vCPUs, ${need_disk} GB standard PD in ${region}"
+          quotas_json="$(gcloud compute regions describe "$region" --project "$project" --format=json 2>/dev/null || true)"
+          [ -n "$quotas_json" ] || { warn "could not read region quotas (is gcloud authenticated for ${project}?); skipping quota check."; exit 0; }
+          for check in "CPUS ${need_cpu}" "DISKS_TOTAL_GB ${need_disk}"; do
+            metric="${check%% *}"
+            need="${check##* }"
+            limit="$(printf '%s' "$quotas_json" | yq -p json -r ".quotas[] | select(.metric == \"$metric\") | .limit")"
+            usage="$(printf '%s' "$quotas_json" | yq -p json -r ".quotas[] | select(.metric == \"$metric\") | .usage")"
+            headroom="$(awk -v l="$limit" -v u="$usage" 'BEGIN{printf "%d", l-u}')"
+            [ "$headroom" -ge "$need" ] \
+              || die "insufficient ${metric} quota in ${region}: need ${need}, headroom ${headroom} (limit ${limit}, in use ${usage}). Request an increase: https://console.cloud.google.com/iam-admin/quotas?project=${project}"
+            echo "quota ${metric}: need ${need}, headroom ${headroom} (limit ${limit})"
+          done
+        elif [ "$provider" = "aws" ]; then
+          command -v aws >/dev/null 2>&1 || { warn "aws not found; skipping AWS quota check."; exit 0; }
+          export AWS_PROFILE="{{.AWS_PROFILE}}"
+          nodes_per_zone="$(yq_cfg '.data.awsNodesPerZone // "2"')"
+          nodes=$(( nodes_per_zone * zone_count ))
+          need_cpu=$(( nodes * 4 ))
+          echo "footprint: ${nodes} x m5.xlarge = ${need_cpu} vCPUs in ${region}"
+          limit="$(aws service-quotas get-service-quota --service-code ec2 \
+            --quota-code L-1216C47A --region "$region" \
+            --query 'Quota.Value' --output text 2>/dev/null || true)"
+          if [ -z "$limit" ] || [ "$limit" = "None" ]; then
+            warn "could not read the EC2 On-Demand Standard vCPU quota (service-quotas access); skipping."
+            exit 0
+          fi
+          lim_int="$(awk -v v="$limit" 'BEGIN{printf "%d", v}')"
+          [ "$lim_int" -ge "$need_cpu" ] \
+            || die "EC2 On-Demand Standard vCPU quota in ${region} is ${lim_int}; the configured footprint needs ${need_cpu}."
+          echo "quota EC2 vCPUs: need ${need_cpu}, limit ${lim_int}"
+        fi

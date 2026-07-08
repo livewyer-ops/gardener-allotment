@@ -20,5 +20,8 @@ data:
   # expiresAt: "2026-06-30"
   dnsDomain: allotment.garden.internal
   vpcNetwork: default
-  gcpNodesPerZone: 3
+  # 2 nodes/zone × 2 zones × e2-standard-8 = 32 vCPUs and 400 GB standard
+  # persistent disk - sized to fit a fresh project's default regional quotas.
+  # Raise gcpNodesPerZone only after checking quota headroom (task preflight).
+  gcpNodesPerZone: 2
   createShoot: "false"

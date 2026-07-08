@@ -57,3 +57,34 @@ spec:
                 name: gardener
                 namespace: garden
               (data.kubeconfig != ''): true
+
+    - name: fluent-teardown-guard-armed
+      try:
+        - description: Fluent teardown guard policy exists on the runtime cluster.
+          assert:
+            cluster: runtime
+            resource:
+              apiVersion: admissionregistration.k8s.io/v1
+              kind: ValidatingAdmissionPolicy
+              metadata:
+                name: allotment-fluent-teardown-guard
+        - description: Fluent teardown guard binding denies writes once the permit is gone.
+          assert:
+            cluster: runtime
+            resource:
+              apiVersion: admissionregistration.k8s.io/v1
+              kind: ValidatingAdmissionPolicyBinding
+              metadata:
+                name: allotment-fluent-teardown-guard
+              spec:
+                paramRef:
+                  parameterNotFoundAction: Deny
+        - description: Fluent write permit is present while the landscape is running.
+          assert:
+            cluster: runtime
+            resource:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: allotment-fluent-write-permit
+                namespace: garden

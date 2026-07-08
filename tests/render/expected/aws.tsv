@@ -65,6 +65,9 @@ seed kubernetes.crossplane.io/v1alpha2 Object garden-seed-gardenlet
 seed kubernetes.crossplane.io/v1alpha2 Object garden-seed-seed-cr
 seed kubernetes.crossplane.io/v1alpha2 Object garden-seed-registration-permit
 seed kubernetes.crossplane.io/v1alpha2 Object garden-seed-gardenlet-deploy
+seed kubernetes.crossplane.io/v1alpha2 Object garden-seed-fluent-write-permit
+seed kubernetes.crossplane.io/v1alpha2 Object garden-seed-fluent-guard-vap
+seed kubernetes.crossplane.io/v1alpha2 Object garden-seed-fluent-guard-vapb
 virtual kubernetes.crossplane.io/v1alpha2 Object virtual-project
 virtual kubernetes.crossplane.io/v1alpha2 Object garden-virtual-virtual-cloudprofile
 virtual kubernetes.crossplane.io/v1alpha2 Object garden-virtual-virtual-credentials-aws

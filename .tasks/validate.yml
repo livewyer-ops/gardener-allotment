@@ -22,6 +22,8 @@ tasks:
         tool kubeconform -v >/dev/null
         tool chainsaw version >/dev/null
 
+        tool shellcheck .tasks/*.sh
+
         tool yamllint -c .yamllint.yaml bootstrap/ platform/ deploy/ tests/ .github/ .tasks/ Taskfile.yml aqua.yaml kind.yaml
 
         {

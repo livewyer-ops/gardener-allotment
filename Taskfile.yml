@@ -122,8 +122,11 @@ tasks:
         set -euo pipefail
         install -d -m 700 private
         echo "Creating kind cluster..."
-        kind get clusters 2>/dev/null | grep -q '^allotment$' || \
+        if kind get clusters 2>/dev/null | grep -q '^allotment$'; then
+          bash .tasks/verify-kind-cluster.sh "$KUBECONFIG"
+        else
           kind create cluster --config kind.yaml --kubeconfig "$KUBECONFIG"
+        fi
         echo "Installing Crossplane + platform..."
         kubectl apply -f bootstrap/crossplane.yaml >/dev/null
         kubectl -n crossplane-system wait --for=condition=Available \
@@ -182,6 +185,13 @@ tasks:
           echo "ERROR: kind not found. Run aqua install and add \$(aqua root-dir)/bin to PATH." >&2
           exit 1
         }
+        cluster_name="allotment"
+        if ! kind get clusters 2>/dev/null | grep -q "^${cluster_name}$"; then
+          echo "kind cluster ${cluster_name} does not exist."
+          rm -f "$KUBECONFIG" private/runtime-kubeconfig
+          exit 0
+        fi
+        bash .tasks/verify-kind-cluster.sh "$KUBECONFIG" "$cluster_name"
 
         echo "Deleting XAllotment (cascade through all children)..."
         status=0
@@ -210,7 +220,7 @@ tasks:
           echo "Teardown did not complete; preserving kind cluster for inspection." >&2
           exit "$status"
         fi
-        kind delete cluster --name allotment
+        kind delete cluster --name "$cluster_name"
         rm -f "$KUBECONFIG" private/runtime-kubeconfig
         echo "Done."
 

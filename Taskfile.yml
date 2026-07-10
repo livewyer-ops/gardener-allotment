@@ -172,9 +172,16 @@ tasks:
   teardown:
     desc: Delete XAllotment, capture diagnostics, then remove kind
     cmds:
-      - task: config:preflight-config
       - |
         set -euo pipefail
+        command -v kubectl >/dev/null 2>&1 || {
+          echo "ERROR: kubectl not found. Run aqua install and add \$(aqua root-dir)/bin to PATH." >&2
+          exit 1
+        }
+        command -v kind >/dev/null 2>&1 || {
+          echo "ERROR: kind not found. Run aqua install and add \$(aqua root-dir)/bin to PATH." >&2
+          exit 1
+        }
 
         echo "Deleting XAllotment (cascade through all children)..."
         status=0

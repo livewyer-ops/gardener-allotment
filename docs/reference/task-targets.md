@@ -29,7 +29,7 @@ live in `task help` so they cannot drift.
 
 **Tear down**
 
-- `teardown`: `kubectl delete xallotment --cascade=foreground`; ClusterUsages cascade through every child in order (~30 min on GCP, ~15-20 min on AWS)
+- `teardown`: `kubectl delete xallotment --cascade=foreground`; ClusterUsages cascade through every child in order (~30 min on GCP, ~15-20 min on AWS). This task does not require `deploy/config.yaml`.
 - `deauth`: remove cloud credentials (guarded: refuses while resources exist)
 - `verify-clean`: read-only audit for likely cloud leftovers
 - `clean-private`: remove generated logs and kubeconfigs, keep credentials

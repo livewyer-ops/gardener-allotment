@@ -135,15 +135,34 @@ tasks:
         aws iam put-user-policy --user-name "${cluster}-bootstrap" --policy-name EKSFullAccess \
           --policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"eks:*","Resource":"*"}]}'
 
-        install -m 600 /dev/null private/aws-credentials
-        aws iam create-access-key --user-name "${cluster}-bootstrap" \
-          --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text \
-          | {
-            read -r access_key secret_key
-            printf '[default]\naws_access_key_id = %s\naws_secret_access_key = %s\n' \
-              "$access_key" "$secret_key" >private/aws-credentials
-          }
-        chmod 600 private/aws-credentials
+        credentials_tmp="$(mktemp private/aws-credentials.XXXXXX)"
+        chmod 600 "$credentials_tmp"
+        created_access_key=""
+        cleanup_failed_key() {
+          status=$?
+          trap - EXIT
+          rm -f "$credentials_tmp"
+          if [ -n "$created_access_key" ]; then
+            aws iam delete-access-key --user-name "${cluster}-bootstrap" \
+              --access-key-id "$created_access_key" >/dev/null 2>&1 \
+              || printf 'WARN: failed to remove access key %s after local credential write failed.\n' \
+                "$created_access_key" >&2
+          fi
+          exit "$status"
+        }
+        trap cleanup_failed_key EXIT
+
+        key_output="$(aws iam create-access-key --user-name "${cluster}-bootstrap" \
+          --query 'AccessKey.[AccessKeyId,SecretAccessKey]' --output text)"
+        read -r access_key secret_key <<<"$key_output"
+        created_access_key="${access_key:-}"
+        [ -n "${access_key:-}" ] && [ -n "${secret_key:-}" ] \
+          || die "AWS did not return a complete access key."
+        printf '[default]\naws_access_key_id = %s\naws_secret_access_key = %s\n' \
+          "$access_key" "$secret_key" >"$credentials_tmp"
+        mv "$credentials_tmp" private/aws-credentials
+        created_access_key=""
+        trap - EXIT
         echo "Wrote private/aws-credentials."
 
         if command -v kubectl >/dev/null 2>&1 && kubectl get namespace crossplane-system >/dev/null 2>&1; then

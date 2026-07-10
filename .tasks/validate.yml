@@ -192,15 +192,18 @@ tasks:
             --include-full-xr \
             --timeout="${RENDER_TIMEOUT:-3m}" >"$render"
 
-          tool yq -r 'select(type == "!!map" and has("kind")) | [.apiVersion, .kind, (.metadata.name // "-")] | @tsv' "$render" \
-            | sort >"$inventory"
+          XR_KIND="$kind" XR_NAME="$name" tool yq -r \
+            'select(type == "!!map" and has("kind")) |
+             select(.apiVersion != "allotment.io/v1alpha1" or .kind != strenv(XR_KIND) or .metadata.name != strenv(XR_NAME)) |
+             [.apiVersion, .kind, (.metadata.name // "-")] | @tsv' "$render" \
+            | sed '/^[[:space:]]*$/d' | sort >"$inventory"
 
-          awk -v component="$component" 'NF && $1 !~ /^#/ && $1 == component {print $2 "\t" $3 "\t" $4}' \
-            "tests/render/expected/${provider}.tsv" | while IFS= read -r expected; do
-              [ -n "$expected" ] || continue
-              grep -Fx -- "$expected" "$inventory" >/dev/null \
-                || die "rendered ${provider}/${component} missing expected resource: ${expected}"
-            done
+          expected_inventory="$tmp/$provider/${component}.expected.inventory"
+          awk -v component="$component" \
+            'NF && $1 !~ /^#/ && $1 == component {print $2 "\t" $3 "\t" $4}' \
+            "tests/render/expected/${provider}.tsv" | sort >"$expected_inventory"
+          diff -u "$expected_inventory" "$inventory" \
+            || die "rendered ${provider}/${component} inventory changed"
 
           if grep -Eq 'your-gcp-project-id|123456789012' "$render"; then
             die "rendered ${provider}/${component} retained example project/account placeholder"

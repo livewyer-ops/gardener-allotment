@@ -8,6 +8,7 @@ packages:
   - name: jqlang/jq@jq-1.8.1
   - name: koalaman/shellcheck@v0.11.0
   - name: wasilibs/go-yamllint@v1.38.0
+  - name: cue-lang/cue@v0.17.0
   - name: yannh/kubeconform@v0.8.0
   - name: kyverno/chainsaw@v0.2.15
   - name: crossplane/crossplane@v2.3.2

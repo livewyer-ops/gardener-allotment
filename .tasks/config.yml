@@ -9,114 +9,12 @@ tasks:
       - |
         set -euo pipefail
         die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-        yq_eval() {
-          command -v yq >/dev/null 2>&1 || die "yq not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
-          yq -r "$1" deploy/config.yaml
-        }
-
-        [ -f deploy/config.yaml ] || die "deploy/config.yaml not found."
-        provider="$(yq_eval '.data.provider // ""')"
-        case "$provider" in
-          aws | gcp) ;;
-          "") die "provider not set in deploy/config.yaml." ;;
-          *) die "unsupported provider '$provider'; expected aws or gcp." ;;
-        esac
-
-        for key in projectId region clusterName dnsDomain; do
-          value="$(yq_eval ".data.${key} // \"\"")"
-          [ -n "$value" ] || die "$key not set in deploy/config.yaml."
-          [ "$value" != "REPLACE" ] || die "$key must not be REPLACE in deploy/config.yaml."
-        done
-
-        created_by="$(yq_eval '.data.createdBy // ""')"
-        if [ -n "$created_by" ]; then
-          case "$created_by" in
-            *[!a-z0-9_-]*) die "createdBy must use only lowercase letters, numbers, underscores, and dashes." ;;
-          esac
-        fi
-        expires_at="$(yq_eval '.data.expiresAt // ""')"
-        if [ -n "$expires_at" ]; then
-          case "$expires_at" in
-            [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
-            *) die "expiresAt must be YYYY-MM-DD when set." ;;
-          esac
-        fi
-
-        region="$(yq_eval '.data.region // ""')"
-        case "$region" in
-          [a-z]*[0-9]) ;;
-          *) die "region '$region' does not look like a cloud region." ;;
-        esac
-
-        zones_type="$(yq_eval '(.data.zones // []) | type')"
-        [ "$zones_type" = "!!seq" ] || die "zones must be a list."
-        zone_count="$(yq_eval '.data.zones // [] | length')"
-        case "$zone_count" in
-          '' | *[!0-9]*) die "zones must be a list." ;;
-        esac
-        case "$provider" in
-          aws)
-            [ "$zone_count" -ge 2 ] && [ "$zone_count" -le 4 ] \
-              || die "AWS zones must contain 2 to 4 zones in the selected region."
-            ;;
-          gcp)
-            [ "$zone_count" -ge 1 ] \
-              || die "GCP zones must contain at least one zone in the selected region."
-            ;;
-        esac
-
-        seen_zones=""
-        index=0
-        while [ "$index" -lt "$zone_count" ]; do
-          zone="$(yq_eval ".data.zones[$index] // \"\"")"
-          [ -n "$zone" ] || die "zones[$index] not set in deploy/config.yaml."
-          case " $seen_zones " in
-            *" $zone "*) die "duplicate zone '$zone' in deploy/config.yaml." ;;
-          esac
-          seen_zones="${seen_zones} ${zone}"
-          case "$provider" in
-            aws)
-              case "$zone" in
-                "${region}"[a-z]) ;;
-                *) die "AWS zone '$zone' must be in region '$region'." ;;
-              esac
-              ;;
-            gcp)
-              case "$zone" in
-                "${region}"-[a-z]) ;;
-                *) die "GCP zone '$zone' must be in region '$region'." ;;
-              esac
-              ;;
-          esac
-          index=$((index + 1))
-        done
-
-        if [ "$provider" = "aws" ]; then
-          aws_nodes_per_zone="$(yq_eval '.data.awsNodesPerZone // ""')"
-          if [ -n "$aws_nodes_per_zone" ]; then
-            case "$aws_nodes_per_zone" in
-              *[!0-9]*) die "awsNodesPerZone must be a positive integer." ;;
-              0) die "awsNodesPerZone must be greater than zero." ;;
-            esac
-          fi
-          aws_gardenlinux_ami="$(yq_eval '.data.awsGardenlinuxAmi // ""')"
-          case "$aws_gardenlinux_ami" in
-            ami-*) ;;
-            "") die "awsGardenlinuxAmi not set in deploy/config.yaml." ;;
-            *) die "awsGardenlinuxAmi '$aws_gardenlinux_ami' does not look like an AWS AMI ID." ;;
-          esac
-        else
-          vpc_network="$(yq_eval '.data.vpcNetwork // ""')"
-          [ -n "$vpc_network" ] || die "vpcNetwork not set in deploy/config.yaml."
-          [ "$vpc_network" != "REPLACE" ] || die "vpcNetwork must not be REPLACE in deploy/config.yaml."
-          gcp_nodes_per_zone="$(yq_eval '.data.gcpNodesPerZone // ""')"
-          if [ -n "$gcp_nodes_per_zone" ]; then
-            case "$gcp_nodes_per_zone" in
-              *[!0-9]*) die "gcpNodesPerZone must be a positive integer." ;;
-              0) die "gcpNodesPerZone must be greater than zero." ;;
-            esac
-          fi
-        fi
+        config_file="${ALLOTMENT_CONFIG_FILE:-deploy/config.yaml}"
+        [ -f "$config_file" ] || die "$config_file not found."
+        command -v cue >/dev/null 2>&1 \
+          || die "cue not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
+        cue vet -c schemas/allotment-config.cue yaml: "$config_file" -d '#AllotmentConfig'
+        provider="$(cue export yaml: "$config_file" -e data.provider --out text)"
 
         [ -f "bootstrap/providers-${provider}.yaml" ] || die "bootstrap/providers-${provider}.yaml not found."
         [ -d "platform/compositions/${provider}" ] || die "platform/compositions/${provider}/ not found."
@@ -153,3 +51,113 @@ tasks:
             fi
             ;;
         esac
+
+  preflight-env:
+    desc: Check container runtime and cloud quota headroom for the configured footprint
+    cmds:
+      - |
+        set -euo pipefail
+        die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+        warn() { printf 'WARN: %s\n' "$*" >&2; }
+        command -v yq >/dev/null 2>&1 || die "yq not found. Run aqua install and add \$(aqua root-dir)/bin to PATH."
+        yq_cfg() { yq -r "$1" deploy/config.yaml; }
+
+        # Container runtime: Docker, or Podman via its Docker-compatible API.
+        if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+          echo "runtime: docker"
+        elif command -v podman >/dev/null 2>&1 \
+          && [ "$(podman info --format json 2>/dev/null | yq -p json -r '.host.remoteSocket.exists // false')" = "true" ]; then
+          echo "runtime: podman (kind auto-detects it; set KIND_EXPERIMENTAL_PROVIDER=podman if Docker is also installed)"
+        else
+          die "No usable container runtime. Start Docker, or enable Podman's API socket (Linux: systemctl --user start podman.socket; macOS: podman machine start with >=8 GiB memory)."
+        fi
+
+        provider="$(yq_cfg '.data.provider // ""')"
+        region="$(yq_cfg '.data.region // ""')"
+        project="$(yq_cfg '.data.projectId // ""')"
+        zone_count="$(yq_cfg '.data.zones | length')"
+        create_shoot="$(yq_cfg '.data.createShoot // "false"')"
+
+        if [ "$provider" = "gcp" ]; then
+          command -v gcloud >/dev/null 2>&1 || { warn "gcloud not found; skipping GCP quota check."; exit 0; }
+          nodes_per_zone="$(yq_cfg '.data.gcpNodesPerZone // "2"')"
+          machine="$(grep -m1 'machineType:' platform/compositions/gcp/infra.yaml | awk '{print $2}')"
+          vcpu="${machine##*-}"
+          disk_gb="$(grep -m1 'diskSizeGb:' platform/compositions/gcp/infra.yaml | awk '{print $2}')"
+          nodes=$(( nodes_per_zone * zone_count ))
+          need_cpu=$(( nodes * vcpu ))
+          need_disk=$(( nodes * disk_gb ))
+          if [ "$create_shoot" = "true" ]; then
+            # Default GCP shoot: one n1-standard-2 worker with a 50 GB disk.
+            need_cpu=$(( need_cpu + 2 ))
+            need_disk=$(( need_disk + 50 ))
+          fi
+          echo "footprint: ${nodes} x ${machine}; total ${need_cpu} vCPUs, ${need_disk} GB standard PD in ${region}"
+          quotas_json="$(gcloud compute regions describe "$region" --project "$project" --format=json 2>/dev/null || true)"
+          [ -n "$quotas_json" ] || { warn "could not read region quotas (is gcloud authenticated for ${project}?); skipping quota check."; exit 0; }
+          for check in "CPUS ${need_cpu}" "DISKS_TOTAL_GB ${need_disk}"; do
+            metric="${check%% *}"
+            need="${check##* }"
+            limit="$(printf '%s' "$quotas_json" | yq -p json -r ".quotas[] | select(.metric == \"$metric\") | .limit")"
+            usage="$(printf '%s' "$quotas_json" | yq -p json -r ".quotas[] | select(.metric == \"$metric\") | .usage")"
+            headroom="$(awk -v l="$limit" -v u="$usage" 'BEGIN{printf "%d", l-u}')"
+            [ "$headroom" -ge "$need" ] \
+              || die "insufficient ${metric} quota in ${region}: need ${need}, headroom ${headroom} (limit ${limit}, in use ${usage}). Request an increase: https://console.cloud.google.com/iam-admin/quotas?project=${project}"
+            echo "quota ${metric}: need ${need}, headroom ${headroom} (limit ${limit})"
+          done
+        elif [ "$provider" = "aws" ]; then
+          command -v aws >/dev/null 2>&1 || { warn "aws not found; skipping AWS quota check."; exit 0; }
+          if [ -s private/aws-credentials ]; then
+            export AWS_SHARED_CREDENTIALS_FILE="$PWD/private/aws-credentials"
+            export AWS_PROFILE=default
+          else
+            export AWS_PROFILE="{{.AWS_PROFILE}}"
+          fi
+          nodes_per_zone="$(yq_cfg '.data.awsNodesPerZone // "2"')"
+          nodes=$(( nodes_per_zone * zone_count ))
+          need_cpu=$(( nodes * 4 ))
+          if [ "$create_shoot" = "true" ]; then
+            # Default AWS shoot: one m5.xlarge worker.
+            need_cpu=$(( need_cpu + 4 ))
+          fi
+          echo "footprint: ${nodes} x m5.xlarge; total ${need_cpu} vCPUs in ${region}"
+          limit="$(aws service-quotas get-service-quota --service-code ec2 \
+            --quota-code L-1216C47A --region "$region" \
+            --query 'Quota.Value' --output text 2>/dev/null || true)"
+          if [ -z "$limit" ] || [ "$limit" = "None" ]; then
+            warn "could not read the EC2 On-Demand Standard vCPU quota (service-quotas access); skipping."
+            exit 0
+          fi
+          lim_int="$(awk -v v="$limit" 'BEGIN{printf "%d", v}')"
+          if ! instance_types="$(aws ec2 describe-instances --region "$region" \
+            --filters 'Name=instance-state-name,Values=pending,running' \
+            --query 'Reservations[].Instances[?InstanceLifecycle!=`spot`].InstanceType' \
+            --output text 2>/dev/null)"; then
+            warn "could not read current EC2 instance usage; skipping AWS quota check."
+            exit 0
+          fi
+
+          used_cpu=0
+          type_counts="$(printf '%s\n' "$instance_types" | tr '\t ' '\n' | sed '/^$/d' | sort | uniq -c)"
+          while read -r count instance_type; do
+            [ -n "${instance_type:-}" ] || continue
+            family="${instance_type%%.*}"
+            case "$family" in
+              a* | c* | d* | h* | i* | m* | r* | t* | z*) ;;
+              *) continue ;;
+            esac
+            vcpus="$(aws ec2 describe-instance-types --region "$region" \
+              --instance-types "$instance_type" \
+              --query 'InstanceTypes[0].VCpuInfo.DefaultVCpus' --output text 2>/dev/null)" \
+              || die "could not determine vCPU count for EC2 instance type ${instance_type}."
+            case "$vcpus" in
+              '' | None | *[!0-9]*) die "invalid vCPU count '$vcpus' for EC2 instance type ${instance_type}." ;;
+            esac
+            used_cpu=$(( used_cpu + count * vcpus ))
+          done <<<"$type_counts"
+
+          headroom=$(( lim_int - used_cpu ))
+          [ "$headroom" -ge "$need_cpu" ] \
+            || die "insufficient EC2 On-Demand Standard vCPU quota in ${region}: need ${need_cpu}, headroom ${headroom} (limit ${lim_int}, in use ${used_cpu})."
+          echo "quota EC2 vCPUs: need ${need_cpu}, headroom ${headroom} (limit ${lim_int}, in use ${used_cpu})"
+        fi

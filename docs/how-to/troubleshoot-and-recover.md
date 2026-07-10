@@ -126,6 +126,16 @@ re-run it. A rare AWS NAT Elastic IP release race has been observed (about one
 in several cycles) where the EIP remains allocated but unassociated after its
 managed resource is gone; release it manually if `verify-clean` reports it.
 
+**Stuck on cluster-scoped fluent `ClusterFilters`.** Historically the most
+common deadlock: the colocated garden and seed each install the provider/OS
+extensions, whose charts ship identical cluster-scoped fluent resources, and
+during the seed drain the two owners fight (delete vs re-adopt). Teardown now
+arms the `allotment-fluent-teardown-guard` ValidatingAdmissionPolicy: the
+moment XSeed teardown starts, garden-side recreates are denied by admission,
+so the drain completes. `task teardown` streams the Crossplane resource trace;
+if it stops progressing during XSeed or XGarden deletion, capture diagnostics
+and report it - the guard should have made this path impossible.
+
 **Break-glass (last resort).** If a teardown is genuinely deadlocked - diagnosed,
 not assumed - seed-class `ManagedResource`s on the runtime cluster can be deleted
 by hand to let Garden's deletion DAG proceed. Treat this as evidence of a bug to

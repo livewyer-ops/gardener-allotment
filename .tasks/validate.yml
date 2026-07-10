@@ -18,8 +18,11 @@ tasks:
         tool yq --version >/dev/null
         tool jq --version >/dev/null
         tool shellcheck --version >/dev/null
+        tool cue version >/dev/null
         tool kubeconform -v >/dev/null
         tool chainsaw version >/dev/null
+
+        tool shellcheck .tasks/*.sh
 
         tool yamllint -c .yamllint.yaml bootstrap/ platform/ deploy/ tests/ .github/ .tasks/ Taskfile.yml aqua.yaml kind.yaml
 
@@ -39,6 +42,11 @@ tasks:
         done
 
         tool task --list >/dev/null
+
+        for provider in aws gcp; do
+          tool cue vet -c schemas/allotment-config.cue yaml: \
+            "deploy/config-${provider}.yaml.example" -d '#AllotmentConfig'
+        done
 
         find . -path './.git' -prune -o -path './private' -prune -o \
           -type f -name '*.md' -print | sort | while IFS= read -r file; do
@@ -71,8 +79,25 @@ tasks:
           "$@"
         }
 
-        command -v docker >/dev/null 2>&1 || die "docker not found. Crossplane render validation requires Docker."
-        docker info >/dev/null 2>&1 || die "Docker daemon is not available. Start Docker before running render validation."
+        # Container runtime: Docker, or Podman through its Docker-compatible
+        # API socket (no docker symlink needed - the render tooling speaks the
+        # API via DOCKER_HOST, not the docker binary).
+        if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+          :
+        elif command -v podman >/dev/null 2>&1; then
+          if [ -z "${DOCKER_HOST:-}" ]; then
+            sock="$(podman info --format json 2>/dev/null | tool yq -p json -r '.host.remoteSocket.path // ""')"
+            case "$sock" in
+              unix://*) export DOCKER_HOST="$sock" ;;
+              /*) export DOCKER_HOST="unix://$sock" ;;
+            esac
+          fi
+          sock_up="$(podman info --format json 2>/dev/null | tool yq -p json -r '.host.remoteSocket.exists // false')"
+          [ "$sock_up" = "true" ] \
+            || die "podman found but its API socket is not listening. Linux: systemctl --user start podman.socket; macOS: podman machine start (give the machine >=8 GiB memory)."
+        else
+          die "No container runtime found. Install Docker, or Podman with its API socket enabled."
+        fi
         tool crossplane version --client >/dev/null
 
         tmp="$(mktemp -d)"
@@ -152,6 +177,16 @@ tasks:
             "$source" >"$target"
         }
 
+        patch_production_composition() {
+          source="$1"
+          target="$2"
+          TEMPLATE="$(cat "$template_file")" tool yq \
+            '(.spec.pipeline[] | select(.functionRef.name == "function-go-templating").input.source) = "Inline" |
+             (.spec.pipeline[] | select(.functionRef.name == "function-go-templating").input.inline.template) = strenv(TEMPLATE) |
+             del(.spec.pipeline[] | select(.functionRef.name == "function-go-templating").input.fileSystem)' \
+            "$source" >"$target"
+        }
+
         render_component() {
           provider="$1"
           component="$2"
@@ -175,15 +210,18 @@ tasks:
             --include-full-xr \
             --timeout="${RENDER_TIMEOUT:-3m}" >"$render"
 
-          tool yq -r 'select(type == "!!map" and has("kind")) | [.apiVersion, .kind, (.metadata.name // "-")] | @tsv' "$render" \
-            | sort >"$inventory"
+          XR_KIND="$kind" XR_NAME="$name" tool yq -r \
+            'select(type == "!!map" and has("kind")) |
+             select(.apiVersion != "allotment.io/v1alpha1" or .kind != strenv(XR_KIND) or .metadata.name != strenv(XR_NAME)) |
+             [.apiVersion, .kind, (.metadata.name // "-")] | @tsv' "$render" \
+            | sed '/^[[:space:]]*$/d' | sort >"$inventory"
 
-          awk -v component="$component" 'NF && $1 !~ /^#/ && $1 == component {print $2 "\t" $3 "\t" $4}' \
-            "tests/render/expected/${provider}.tsv" | while IFS= read -r expected; do
-              [ -n "$expected" ] || continue
-              grep -Fx -- "$expected" "$inventory" >/dev/null \
-                || die "rendered ${provider}/${component} missing expected resource: ${expected}"
-            done
+          expected_inventory="$tmp/$provider/${component}.expected.inventory"
+          awk -v component="$component" \
+            'NF && $1 !~ /^#/ && $1 == component {print $2 "\t" $3 "\t" $4}' \
+            "tests/render/expected/${provider}.tsv" | sort >"$expected_inventory"
+          diff -u "$expected_inventory" "$inventory" \
+            || die "rendered ${provider}/${component} inventory changed"
 
           if grep -Eq 'your-gcp-project-id|123456789012' "$render"; then
             die "rendered ${provider}/${component} retained example project/account placeholder"
@@ -212,6 +250,41 @@ tasks:
           echo "Rendered ${provider}/${component}"
         }
 
+        validate_aws_infra_sequence() {
+          composition="$tmp/aws/infra-production-composition.yaml"
+          render="$tmp/aws/infra-production-render.yaml"
+          names="$tmp/aws/infra-production.names"
+
+          patch_production_composition platform/compositions/aws/infra.yaml "$composition"
+          tool crossplane composition render "$tmp/aws/infra.yaml" "$composition" "$tmp/functions.yaml" \
+            --required-resources "$tmp/aws/required" \
+            --include-full-xr \
+            --include-function-results \
+            --timeout="${RENDER_TIMEOUT:-3m}" >"$render"
+
+          tool yq -r 'select(type == "!!map" and has("kind")) |
+            (.metadata.annotations."crossplane.io/composition-resource-name" // "") |
+            select(. != "")' "$render" \
+            | sort >"$names"
+
+          for name in eks-cluster-role eks-cluster-policy eks-node-role \
+            eks-node-policy eks-cni-policy eks-ecr-policy; do
+            grep -Fx -- "$name" "$names" >/dev/null \
+              || die "production aws/infra sequence omitted initial prerequisite: $name"
+          done
+          for name in eks-cluster oidc-provider helm-providerconfig-runtime \
+            eniconfig-a eks-nodegroup pod-cidr-probe-a eks-ebs-csi dns-zone; do
+            if grep -Fx -- "$name" "$names" >/dev/null; then
+              die "production aws/infra sequence created $name before IAM prerequisites were ready"
+            fi
+          done
+
+          tool yq -r 'select(.kind == "Result") | .message' "$render" \
+            | grep -F 'Delaying creation of resource(s) matching "eks-cluster"' >/dev/null \
+            || die "production aws/infra render did not report the EKS sequence gate"
+          echo "Validated production aws/infra sequence"
+        }
+
         for provider in aws gcp; do
           prepare_provider "$provider"
           render_component "$provider" allotment XAllotment garden
@@ -221,3 +294,4 @@ tasks:
           render_component "$provider" seed XSeed garden-seed
           render_component "$provider" virtual XVirtualGarden garden-virtual
         done
+        validate_aws_infra_sequence

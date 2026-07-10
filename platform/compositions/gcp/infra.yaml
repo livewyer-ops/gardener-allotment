@@ -107,7 +107,10 @@ spec:
                 clusterIpv4CidrBlock: 10.2.0.0/16
                 servicesIpv4CidrBlock: 10.3.0.0/20
             forProvider:
-              initialNodeCount: 3
+              # Fallback when gcpNodesPerZone is unset. 2/zone × 2 zones of
+              # e2-standard-8 = 32 vCPUs / 400 GB standard PD, sized to fit a
+              # fresh project's default regional quotas (task preflight checks).
+              initialNodeCount: 2
               nodeLocations: []
               minMasterVersion: REPLACE
               nodeConfig:

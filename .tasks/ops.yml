@@ -254,6 +254,14 @@ tasks:
           --filter="name~^${cluster}" --format='value(name,zone,status)' 2>/dev/null || true)"
         report_found "Compute disk(s)" "$disks"
 
+        # CSI-provisioned PVC disks (etcd, monitoring) have random pvc-* names
+        # and can orphan when cluster deletion outruns the CSI controller's
+        # async disk cleanup. The eval project is dedicated, so any pvc-* disk
+        # left after teardown is Allotment debris.
+        pvc_disks="$(gcloud compute disks list --project "$project" \
+          --filter="name~^pvc-" --format='value(name,zone,sizeGb)' 2>/dev/null || true)"
+        report_found "Orphaned PVC disk(s)" "$pvc_disks"
+
         addresses="$(gcloud compute addresses list --project "$project" \
           --filter="name~^${cluster}" --format='value(name,region,address)' 2>/dev/null || true)"
         report_found "Compute address(es)" "$addresses"
@@ -354,6 +362,14 @@ tasks:
           --filters "Name=tag:Name,Values=${cluster}-*" \
           --query 'SecurityGroups[].GroupId' --output text 2>/dev/null || true)"
         report_found "Security group(s) tagged ${cluster}-*" "$security_groups"
+
+        # CSI-provisioned PVC volumes carry the cluster ownership tag but have
+        # random names; they orphan when cluster deletion outruns the EBS CSI
+        # controller's async cleanup. Tag-scoped, so safe in shared accounts.
+        pvc_volumes="$(aws ec2 describe-volumes --region "$region" \
+          --filters "Name=tag-key,Values=kubernetes.io/cluster/${cluster}" "Name=status,Values=available" \
+          --query 'Volumes[].[VolumeId,Size]' --output text 2>/dev/null || true)"
+        report_found "Orphaned PVC volume(s) owned by cluster ${cluster}" "$pvc_volumes"
 
         zones="$(aws route53 list-hosted-zones-by-name --dns-name "$dns_domain" \
           --query "HostedZones[?Name=='${dns_domain}.'].Id" --output text 2>/dev/null || true)"

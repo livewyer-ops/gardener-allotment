@@ -57,11 +57,6 @@ spec:
               config:
                 apiVersion: gardenlet.config.gardener.cloud/v1alpha1
                 kind: GardenletConfiguration
-                # Disable the seed logging stack (fluent-operator/Vali). In Allotment
-                # the garden and seed are colocated on one cluster, so the provider
-                # extension is installed twice; with seed logging on, both copies
-                # deploy the same cluster-scoped fluent ClusterFilters, and teardown
-                # non-deterministically deadlocks on whichever copy owns them last.
                 # Logging is not needed for an evaluation sandbox.
                 logging:
                   enabled: false
@@ -266,6 +261,123 @@ spec:
     kind: Object
     resourceRef:
       name: {{ $xrName }}-gardenlet-deploy
+  by:
+    apiVersion: kubernetes.crossplane.io/v1alpha2
+    kind: Object
+    resourceRef:
+      name: {{ $xrName }}-seed-cr
+  replayDeletion: true
+---
+# Marker ConfigMap consumed by the admission policy below.
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: {{ $xrName }}-fluent-write-permit
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: fluent-write-permit
+spec:
+  forProvider:
+    manifest:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: allotment-fluent-write-permit
+        namespace: garden
+      data:
+        purpose: "fluent write permit - deletion denies cluster-scoped fluent writes during the seed drain"
+  providerConfigRef:
+    name: runtime
+---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: {{ $xrName }}-fluent-guard-vap
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: fluent-guard-vap
+spec:
+  forProvider:
+    manifest:
+      apiVersion: admissionregistration.k8s.io/v1
+      kind: ValidatingAdmissionPolicy
+      metadata:
+        name: allotment-fluent-teardown-guard
+      spec:
+        failurePolicy: Fail
+        paramKind:
+          apiVersion: v1
+          kind: ConfigMap
+        matchConstraints:
+          resourceRules:
+            - apiGroups: ["fluentbit.fluent.io"]
+              apiVersions: ["*"]
+              operations: ["CREATE", "UPDATE"]
+              resources: ["clusterfilters", "clusterparsers", "clusterinputs", "clusteroutputs", "clustermultilineparsers"]
+        matchConditions:
+          - name: is-garden-serviceaccount
+            expression: "request.userInfo.username.startsWith('system:serviceaccount:garden:')"
+        validations:
+          - expression: "true"
+            message: "cluster-scoped fluent writes are permitted while the allotment-fluent-write-permit ConfigMap exists"
+  providerConfigRef:
+    name: runtime
+---
+apiVersion: kubernetes.crossplane.io/v1alpha2
+kind: Object
+metadata:
+  name: {{ $xrName }}-fluent-guard-vapb
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: fluent-guard-vapb
+spec:
+  forProvider:
+    manifest:
+      apiVersion: admissionregistration.k8s.io/v1
+      kind: ValidatingAdmissionPolicyBinding
+      metadata:
+        name: allotment-fluent-teardown-guard
+      spec:
+        policyName: allotment-fluent-teardown-guard
+        validationActions: ["Deny"]
+        paramRef:
+          name: allotment-fluent-write-permit
+          namespace: garden
+          parameterNotFoundAction: Deny
+  providerConfigRef:
+    name: runtime
+---
+# Keep the guard in place until the Seed CR drain is complete.
+apiVersion: protection.crossplane.io/v1beta1
+kind: ClusterUsage
+metadata:
+  name: fluent-guard-vap-used-by-seed-cr
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: usage-fluent-guard-vap-seed-cr
+    gotemplating.fn.crossplane.io/ready: "True"
+spec:
+  of:
+    apiVersion: kubernetes.crossplane.io/v1alpha2
+    kind: Object
+    resourceRef:
+      name: {{ $xrName }}-fluent-guard-vap
+  by:
+    apiVersion: kubernetes.crossplane.io/v1alpha2
+    kind: Object
+    resourceRef:
+      name: {{ $xrName }}-seed-cr
+  replayDeletion: true
+---
+apiVersion: protection.crossplane.io/v1beta1
+kind: ClusterUsage
+metadata:
+  name: fluent-guard-vapb-used-by-seed-cr
+  annotations:
+    gotemplating.fn.crossplane.io/composition-resource-name: usage-fluent-guard-vapb-seed-cr
+    gotemplating.fn.crossplane.io/ready: "True"
+spec:
+  of:
+    apiVersion: kubernetes.crossplane.io/v1alpha2
+    kind: Object
+    resourceRef:
+      name: {{ $xrName }}-fluent-guard-vapb
   by:
     apiVersion: kubernetes.crossplane.io/v1alpha2
     kind: Object

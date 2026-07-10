@@ -30,6 +30,7 @@ cp deploy/config-gcp.yaml.example deploy/config.yaml   # GCP  (GKE + Cloud DNS)
 cp deploy/config-aws.yaml.example deploy/config.yaml   # AWS  (EKS + Route 53)
 vim deploy/config.yaml    # Set provider, projectId, region, zones
 
+task preflight           # Check runtime + quota headroom for the footprint
 task bootstrap-identity  # Optional: create disposable cloud credentials
 task build               # Validate and assemble the provider manifest bundle
 task install             # Deploy everything (~25 min)
@@ -55,7 +56,9 @@ task deauth       # Remove bootstrap identity and local credentials
 
 ## Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/) and a running Docker daemon
+- [Docker](https://docs.docker.com/get-docker/) and a running daemon, or
+  [Podman](https://podman.io/) with its API socket enabled (see
+  [Getting started](docs/getting-started.md#before-you-start))
 - [aqua](https://aquaproj.github.io/docs/install/) for the pinned project toolchain
 - **GCP**: a dedicated project with billing enabled and permission to enable
   APIs, create service accounts/keys, and grant project roles
@@ -140,7 +143,7 @@ tests/chainsaw/        # Post-install Kubernetes assertions
 `task help` is the authoritative list - it prints every target with descriptions
 and the current provider. The lifecycle groups into:
 
-- **Set up & validate**: `bootstrap-identity`, `build`, `validate`, `validate-render`
+- **Set up & validate**: `preflight`, `bootstrap-identity`, `build`, `validate`, `validate-render`
 - **Run**: `install`, `status`, `validate-live`, `observability`
 - **Access**: `kubeconfig`, `dashboard`, `token`
 - **Tear down**: `teardown`, `deauth`, `verify-clean`, `clean-private`

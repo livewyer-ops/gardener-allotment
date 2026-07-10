@@ -42,7 +42,7 @@ credentials and real billable resources.
 
 Install the local prerequisites:
 
-- Docker
+- Docker, or Podman with its API socket enabled (see the Podman note below)
 - [aqua](https://aquaproj.github.io/docs/install/)
 
 Then clone the repository, install aqua-managed tools, and add aqua's bin
@@ -55,8 +55,17 @@ export PATH="$(aqua root-dir)/bin:$PATH"
 
 After this step, Allotment's standard commands use the pinned `task`, `kind`,
 `kubectl`, `aws`, `gcloud`, Go, `yq`, `jq`, validation tools, and Crossplane
-CLI from `aqua.yaml`. Docker remains external because it is a local runtime, not
-just a CLI.
+CLI from `aqua.yaml`. The container runtime remains external because it is a
+local runtime, not just a CLI.
+
+**Using Podman instead of Docker.** The tasks detect Podman automatically and
+talk to it through its Docker-compatible API - no `docker` symlink or alias is
+needed. Enable the API socket first (Linux:
+`systemctl --user start podman.socket`; macOS: `podman machine start`), and on
+macOS give the Podman machine at least 8 GiB of memory
+(`podman machine set --memory 8192`) - the 2 GiB default fails much later with
+misleading provider-health timeouts. If Docker and Podman are both installed,
+set `KIND_EXPERIMENTAL_PROVIDER=podman` to make kind use Podman.
 
 ## Choose a provider
 
@@ -103,11 +112,24 @@ for the selected region. Garden Linux is the operating system name.
 The defaults create real resources:
 
 - GCP creates a regional GKE runtime cluster with `gcpNodesPerZone × len(zones)`
-  `e2-standard-8` nodes.
+  `e2-standard-8` nodes. The example config (2 nodes/zone × 2 zones, 100 GB
+  disk each) needs 32 vCPUs and 400 GB of standard persistent disk in the
+  region - sized to fit a fresh project's default quotas.
 - AWS creates an EKS runtime cluster with `awsNodesPerZone × len(zones)`
   `m5.xlarge` nodes, plus one NAT gateway per configured runtime zone.
 - Setting `createShoot: "true"` adds a Gardener-managed shoot cluster after the
   landscape is ready.
+
+Check the footprint against your project's actual quotas before installing:
+
+```bash
+task preflight
+```
+
+It computes the vCPU and disk requirements from `deploy/config.yaml`, compares
+them with the region's real quota headroom, and tells you exactly what to
+request if the project falls short. Raising `gcpNodesPerZone` or the zone
+count raises the requirement accordingly.
 
 Use a dedicated account or project, and tear it down when the evaluation is
 finished.

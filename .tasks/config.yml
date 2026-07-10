@@ -178,6 +178,7 @@ tasks:
         region="$(yq_cfg '.data.region // ""')"
         project="$(yq_cfg '.data.projectId // ""')"
         zone_count="$(yq_cfg '.data.zones | length')"
+        create_shoot="$(yq_cfg '.data.createShoot // "false"')"
 
         if [ "$provider" = "gcp" ]; then
           command -v gcloud >/dev/null 2>&1 || { warn "gcloud not found; skipping GCP quota check."; exit 0; }
@@ -188,7 +189,12 @@ tasks:
           nodes=$(( nodes_per_zone * zone_count ))
           need_cpu=$(( nodes * vcpu ))
           need_disk=$(( nodes * disk_gb ))
-          echo "footprint: ${nodes} x ${machine} = ${need_cpu} vCPUs, ${need_disk} GB standard PD in ${region}"
+          if [ "$create_shoot" = "true" ]; then
+            # Default GCP shoot: one n1-standard-2 worker with a 50 GB disk.
+            need_cpu=$(( need_cpu + 2 ))
+            need_disk=$(( need_disk + 50 ))
+          fi
+          echo "footprint: ${nodes} x ${machine}; total ${need_cpu} vCPUs, ${need_disk} GB standard PD in ${region}"
           quotas_json="$(gcloud compute regions describe "$region" --project "$project" --format=json 2>/dev/null || true)"
           [ -n "$quotas_json" ] || { warn "could not read region quotas (is gcloud authenticated for ${project}?); skipping quota check."; exit 0; }
           for check in "CPUS ${need_cpu}" "DISKS_TOTAL_GB ${need_disk}"; do
@@ -203,11 +209,20 @@ tasks:
           done
         elif [ "$provider" = "aws" ]; then
           command -v aws >/dev/null 2>&1 || { warn "aws not found; skipping AWS quota check."; exit 0; }
-          export AWS_PROFILE="{{.AWS_PROFILE}}"
+          if [ -s private/aws-credentials ]; then
+            export AWS_SHARED_CREDENTIALS_FILE="$PWD/private/aws-credentials"
+            export AWS_PROFILE=default
+          else
+            export AWS_PROFILE="{{.AWS_PROFILE}}"
+          fi
           nodes_per_zone="$(yq_cfg '.data.awsNodesPerZone // "2"')"
           nodes=$(( nodes_per_zone * zone_count ))
           need_cpu=$(( nodes * 4 ))
-          echo "footprint: ${nodes} x m5.xlarge = ${need_cpu} vCPUs in ${region}"
+          if [ "$create_shoot" = "true" ]; then
+            # Default AWS shoot: one m5.xlarge worker.
+            need_cpu=$(( need_cpu + 4 ))
+          fi
+          echo "footprint: ${nodes} x m5.xlarge; total ${need_cpu} vCPUs in ${region}"
           limit="$(aws service-quotas get-service-quota --service-code ec2 \
             --quota-code L-1216C47A --region "$region" \
             --query 'Quota.Value' --output text 2>/dev/null || true)"
@@ -216,7 +231,35 @@ tasks:
             exit 0
           fi
           lim_int="$(awk -v v="$limit" 'BEGIN{printf "%d", v}')"
-          [ "$lim_int" -ge "$need_cpu" ] \
-            || die "EC2 On-Demand Standard vCPU quota in ${region} is ${lim_int}; the configured footprint needs ${need_cpu}."
-          echo "quota EC2 vCPUs: need ${need_cpu}, limit ${lim_int}"
+          if ! instance_types="$(aws ec2 describe-instances --region "$region" \
+            --filters 'Name=instance-state-name,Values=pending,running' \
+            --query 'Reservations[].Instances[?InstanceLifecycle!=`spot`].InstanceType' \
+            --output text 2>/dev/null)"; then
+            warn "could not read current EC2 instance usage; skipping AWS quota check."
+            exit 0
+          fi
+
+          used_cpu=0
+          type_counts="$(printf '%s\n' "$instance_types" | tr '\t ' '\n' | sed '/^$/d' | sort | uniq -c)"
+          while read -r count instance_type; do
+            [ -n "${instance_type:-}" ] || continue
+            family="${instance_type%%.*}"
+            case "$family" in
+              a* | c* | d* | h* | i* | m* | r* | t* | z*) ;;
+              *) continue ;;
+            esac
+            vcpus="$(aws ec2 describe-instance-types --region "$region" \
+              --instance-types "$instance_type" \
+              --query 'InstanceTypes[0].VCpuInfo.DefaultVCpus' --output text 2>/dev/null)" \
+              || die "could not determine vCPU count for EC2 instance type ${instance_type}."
+            case "$vcpus" in
+              '' | None | *[!0-9]*) die "invalid vCPU count '$vcpus' for EC2 instance type ${instance_type}." ;;
+            esac
+            used_cpu=$(( used_cpu + count * vcpus ))
+          done <<<"$type_counts"
+
+          headroom=$(( lim_int - used_cpu ))
+          [ "$headroom" -ge "$need_cpu" ] \
+            || die "insufficient EC2 On-Demand Standard vCPU quota in ${region}: need ${need_cpu}, headroom ${headroom} (limit ${lim_int}, in use ${used_cpu})."
+          echo "quota EC2 vCPUs: need ${need_cpu}, headroom ${headroom} (limit ${lim_int}, in use ${used_cpu})"
         fi

@@ -169,6 +169,16 @@ tasks:
             "$source" >"$target"
         }
 
+        patch_production_composition() {
+          source="$1"
+          target="$2"
+          TEMPLATE="$(cat "$template_file")" tool yq \
+            '(.spec.pipeline[] | select(.functionRef.name == "function-go-templating").input.source) = "Inline" |
+             (.spec.pipeline[] | select(.functionRef.name == "function-go-templating").input.inline.template) = strenv(TEMPLATE) |
+             del(.spec.pipeline[] | select(.functionRef.name == "function-go-templating").input.fileSystem)' \
+            "$source" >"$target"
+        }
+
         render_component() {
           provider="$1"
           component="$2"
@@ -229,6 +239,41 @@ tasks:
           echo "Rendered ${provider}/${component}"
         }
 
+        validate_aws_infra_sequence() {
+          composition="$tmp/aws/infra-production-composition.yaml"
+          render="$tmp/aws/infra-production-render.yaml"
+          names="$tmp/aws/infra-production.names"
+
+          patch_production_composition platform/compositions/aws/infra.yaml "$composition"
+          tool crossplane composition render "$tmp/aws/infra.yaml" "$composition" "$tmp/functions.yaml" \
+            --required-resources "$tmp/aws/required" \
+            --include-full-xr \
+            --include-function-results \
+            --timeout="${RENDER_TIMEOUT:-3m}" >"$render"
+
+          tool yq -r 'select(type == "!!map" and has("kind")) |
+            (.metadata.annotations."crossplane.io/composition-resource-name" // "") |
+            select(. != "")' "$render" \
+            | sort >"$names"
+
+          for name in eks-cluster-role eks-cluster-policy eks-node-role \
+            eks-node-policy eks-cni-policy eks-ecr-policy; do
+            grep -Fx -- "$name" "$names" >/dev/null \
+              || die "production aws/infra sequence omitted initial prerequisite: $name"
+          done
+          for name in eks-cluster oidc-provider helm-providerconfig-runtime \
+            eniconfig-a eks-nodegroup pod-cidr-probe-a eks-ebs-csi dns-zone; do
+            if grep -Fx -- "$name" "$names" >/dev/null; then
+              die "production aws/infra sequence created $name before IAM prerequisites were ready"
+            fi
+          done
+
+          tool yq -r 'select(.kind == "Result") | .message' "$render" \
+            | grep -F 'Delaying creation of resource(s) matching "eks-cluster"' >/dev/null \
+            || die "production aws/infra render did not report the EKS sequence gate"
+          echo "Validated production aws/infra sequence"
+        }
+
         for provider in aws gcp; do
           prepare_provider "$provider"
           render_component "$provider" allotment XAllotment garden
@@ -238,3 +283,4 @@ tasks:
           render_component "$provider" seed XSeed garden-seed
           render_component "$provider" virtual XVirtualGarden garden-virtual
         done
+        validate_aws_infra_sequence

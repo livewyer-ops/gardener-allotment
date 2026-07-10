@@ -8,7 +8,9 @@ cp deploy/config-gcp.yaml.example deploy/config.yaml   # GCP
 cp deploy/config-aws.yaml.example deploy/config.yaml   # AWS
 ```
 
-The example files are the canonical, commented templates. The full schema:
+The example files are the canonical, commented templates. Validation constraints
+are defined in [`schemas/allotment-config.cue`](../../schemas/allotment-config.cue).
+The full configuration shape is:
 
 ```yaml
 apiVersion: apiextensions.crossplane.io/v1beta1
@@ -41,15 +43,15 @@ data:
 | Field | Providers | Required | Notes |
 |---|---|---|---|
 | `provider` | both | yes | `gcp` or `aws`; selects the composition set |
-| `projectId` | both | yes | GCP project ID, or AWS 12-digit account ID without dashes |
+| `projectId` | both | yes | GCP project ID (6-30 lowercase letters, numbers, or dashes), or AWS 12-digit account ID without dashes |
 | `region` | both | yes | single cloud region |
 | `zones` | both | yes | GCP: one or more zones in `region`; AWS: two to four AZ names from `region` that are available in your account |
-| `clusterName` | both | yes | prefix for created resources and tags/labels |
-| `dnsDomain` | both | yes | private evaluation DNS domain |
+| `clusterName` | both | yes | lowercase DNS-label prefix, at most 45 characters |
+| `dnsDomain` | both | yes | lowercase private evaluation DNS name, without a trailing dot |
 | `createShoot` | both | yes | `"false"` landscape only, `"true"` adds the `eval` shoot |
 | `createdBy` | both | no | lifecycle metadata value (default `allotment`) |
 | `expiresAt` | both | no | optional lifecycle metadata (e.g. `"2026-06-30"`) |
-| `vpcNetwork` | GCP | yes | VPC network name (e.g. `default`) |
+| `vpcNetwork` | GCP | yes | lowercase VPC network name (e.g. `default`) |
 | `gcpNodesPerZone` | GCP | no | runtime nodes per configured zone (default `3`) |
 | `awsProfile` | AWS | yes | AWS CLI profile for the bootstrap identity |
 | `awsGardenlinuxAmi` | AWS | yes | region-specific Garden Linux AMI for the CloudProfile; Garden Linux is the operating system name |

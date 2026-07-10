@@ -18,6 +18,7 @@ tasks:
         tool yq --version >/dev/null
         tool jq --version >/dev/null
         tool shellcheck --version >/dev/null
+        tool cue version >/dev/null
         tool kubeconform -v >/dev/null
         tool chainsaw version >/dev/null
 
@@ -39,6 +40,11 @@ tasks:
         done
 
         tool task --list >/dev/null
+
+        for provider in aws gcp; do
+          tool cue vet -c schemas/allotment-config.cue yaml: \
+            "deploy/config-${provider}.yaml.example" -d '#AllotmentConfig'
+        done
 
         find . -path './.git' -prune -o -path './private' -prune -o \
           -type f -name '*.md' -print | sort | while IFS= read -r file; do
